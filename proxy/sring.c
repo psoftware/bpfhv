@@ -13,6 +13,9 @@
 #include "sring.h"
 
 #define MY_CACHELINE_SIZE   64
+#define SCHED_TX_QUEUE_N 3
+#define TOTAL_TX_QUEUE_N (1 + SCHED_TX_QUEUE_N)
+#define NUM_TX_BUFFS 256
 
 static void
 sring_rx_check_alignment(void)
@@ -31,11 +34,12 @@ sring_tx_check_alignment(void)
 {
     struct sring_tx_context *priv = NULL;
 
+    assert(256 % TOTAL_TX_QUEUE_N == 0); /* for now queue count should be multiple of num_tx_buffs */
     assert(((uintptr_t)&priv->prod) % MY_CACHELINE_SIZE == 0);
     assert(((uintptr_t)&priv->cons) % MY_CACHELINE_SIZE == 0);
     assert(((uintptr_t)&priv->qmask) % MY_CACHELINE_SIZE == 0);
     assert(((uintptr_t)&priv->clear) % MY_CACHELINE_SIZE == 0);
-    assert(((uintptr_t)&priv->desc[0]) % MY_CACHELINE_SIZE == 0);
+    assert(((uintptr_t)&sring_tx_context_subqueue_static(NUM_TX_BUFFS/TOTAL_TX_QUEUE_N, 0)->desc[0]) % MY_CACHELINE_SIZE == 0);
 }
 
 static size_t
@@ -48,8 +52,10 @@ sring_rx_ctx_size(size_t num_rx_bufs)
 static size_t
 sring_tx_ctx_size(size_t num_tx_bufs)
 {
+    assert(num_tx_bufs == NUM_TX_BUFFS);
+    // TODO: this is horrible and should be generalized
     return sizeof(struct bpfhv_tx_context) + sizeof(struct sring_tx_context) +
-	num_tx_bufs * sizeof(struct sring_tx_desc);
+        TOTAL_TX_QUEUE_N*(sizeof(struct sring_tx_schqueue_context) + sizeof(struct sring_tx_desc)*(num_tx_bufs/TOTAL_TX_QUEUE_N));
 }
 
 static void
@@ -70,11 +76,40 @@ sring_tx_ctx_init(struct bpfhv_tx_context *ctx, size_t num_tx_bufs)
     struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
 
     assert((num_tx_bufs & (num_tx_bufs - 1)) == 0);
-    priv->qmask = num_tx_bufs - 1;
+    priv->qmask = (num_tx_bufs/TOTAL_TX_QUEUE_N) - 1;
     priv->prod = priv->cons = priv->clear = 0;
     priv->kick_enabled = 1;
     priv->intr_at = 0;
-    memset(priv->desc, 0, num_tx_bufs * sizeof(priv->desc[0]));
+
+    /* init scheduler related context */
+    priv->mark = 0;
+    priv->add_deficit = 1;
+    priv->current_queue = 0;
+    priv->total_queued_buffs = 0;
+    priv->queue_n = SCHED_TX_QUEUE_N;
+    priv->queue_buffs = num_tx_bufs/TOTAL_TX_QUEUE_N;
+
+    struct sring_tx_schqueue_context *txq_main = sring_tx_context_subqueue(priv, 0);
+    // this fields are never used
+    txq_main->prod = txq_main->cons = txq_main->used = 0;
+    txq_main->deficit = 0;
+    txq_main->quantum = 0;
+    txq_main->weight = 0;
+    //
+    memset(txq_main->desc, 0, (num_tx_bufs/TOTAL_TX_QUEUE_N)*sizeof(txq_main->desc[0]));
+
+    printf("sring.init queue_n %u queue_buffs %u qmask %u\n",
+           ACCESS_ONCE(priv->queue_n), ACCESS_ONCE(priv->queue_buffs),
+           ACCESS_ONCE(priv->qmask));
+
+    for(int i=0; i<SCHED_TX_QUEUE_N; i++) {
+        struct sring_tx_schqueue_context * scq = sring_tx_context_subqueue(priv, i+1);
+        scq->prod = scq->cons = scq->used = 0;
+        scq->deficit = 0;
+        scq->quantum = 1500;
+        scq->weight = i+1;
+        memset(scq->desc, 0, (num_tx_bufs/TOTAL_TX_QUEUE_N)*sizeof(scq->desc[0]));
+    }
 }
 
 static inline void
@@ -246,7 +281,7 @@ sring_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
     txq->notify = 0;
 
     for (;;) {
-        struct sring_tx_desc *txd = priv->desc + (cons & priv->qmask);
+        struct sring_tx_desc *txd = sring_tx_context_subqueue(priv, 0)->desc + (cons & priv->qmask);
         struct iovec iov;
         int ret;
 

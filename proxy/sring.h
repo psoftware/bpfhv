@@ -31,6 +31,21 @@ struct sring_tx_desc {
     uint32_t pad;
 };
 
+struct sring_tx_schqueue_context {
+    /* Scheduler info */
+    uint32_t deficit;
+    uint32_t quantum;
+    uint32_t weight;
+
+    /* Guest read, write */
+    uint32_t prod;
+    uint32_t cons;
+    uint32_t used;
+    uint32_t pad1[26];
+
+    struct sring_tx_desc desc[0];
+};
+
 struct sring_tx_context {
     /* Guest write, hv reads. */
     uint32_t prod;
@@ -43,15 +58,35 @@ struct sring_tx_context {
     uint32_t pad2[30];
 
     /* Guest reads, hv reads. */
-    uint32_t qmask;
-    uint32_t pad3[31];
+    uint32_t qmask; // delete this, it should be queue_buffs-1
+    uint32_t queue_n;
+    uint32_t queue_buffs;
+    uint32_t pad3[29];
 
     /* Private to the guest. */
     uint32_t clear;
-    uint32_t pad4[31];
+    uint32_t mark;
+    uint32_t current_queue;
+    uint32_t add_deficit;
+    uint32_t total_queued_buffs;
+    uint32_t pad4[27];
 
-    struct sring_tx_desc desc[0];
+    /* struct sring_tx_schqueue_context queue[0]; */
+    /* we cannot use sring_tx_schqueue_context as type because
+       it has a dynamic size, defined on malloc. */
+    uint8_t queue[0];
 };
+
+struct sring_tx_schqueue_context * sring_tx_context_subqueue_static(uint32_t queue_buffs, uint32_t i) {
+    struct sring_tx_context* priv = 0;
+    return (struct sring_tx_schqueue_context*)
+        (&priv->queue + i*(sizeof(struct sring_tx_schqueue_context) + queue_buffs*sizeof(struct sring_tx_desc)));
+}
+
+struct sring_tx_schqueue_context * sring_tx_context_subqueue(struct sring_tx_context* priv, uint32_t i) {
+    return (struct sring_tx_schqueue_context*)
+        (&priv->queue + i*(sizeof(struct sring_tx_schqueue_context) + priv->queue_buffs*sizeof(struct sring_tx_desc)));
+}
 
 struct sring_rx_desc {
     uint64_t cookie;

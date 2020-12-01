@@ -912,9 +912,9 @@ BPF_CALL_0(bpf_hv_smp_mb_full)
 	return 0;
 }
 
-BPF_CALL_2(bpf_hv_print_num, const char *, str, long long int, x)
+BPF_CALL_2(bpf_hv_print_num, char, c, long long int, x)
 {
-    printk("%s: %lld\n", str, x);
+    printk("%c: %lld\n", c, x);
     return 0;
 }
 

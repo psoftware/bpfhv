@@ -6,6 +6,12 @@
    __attribute__((section(NAME), used))
 #endif
 
+#if 0
+    static int BPFHV_FUNC(print_num, char c, long long int num);
+#else
+    #define print_num(c,num)
+#endif
+
 static int BPFHV_FUNC(rx_pkt_alloc, struct bpfhv_rx_context *ctx);
 static int BPFHV_FUNC(smp_mb_full);
 
@@ -21,6 +27,49 @@ clear_met_cons(uint32_t old_clear, uint32_t cons, uint32_t new_clear)
     return (uint32_t)(new_clear - cons - 1) < (uint32_t)(new_clear - old_clear);
 }
 
+/* Mark packet and drop if there is no space in the related subqueue
+   We drop it here because txp routine does not allow to drop packets */
+__section("txh")
+int sring_txh(struct bpfhv_tx_context *ctx)
+{
+    struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
+    uint32_t prod = priv->prod;
+    //uint32_t cons = ACCESS_ONCE(priv->cons);
+    uint32_t clear = priv->clear;
+
+    /* 1) check if transmit queue has space, in that case we can directly transmit */
+    uint32_t queued = (prod >= clear) ? (prod - priv->clear) : (priv->queue_buffs - priv->clear + prod);
+    print_num('h', queued);
+    if(queued < priv->queue_buffs) {
+        //print_num("txh: accept for transmit queue", 0);
+        priv->mark = 0; /* mark as direct transmission to transmit queue */
+        print_num('h', 0);
+        return 0;
+    } else
+        return -1; // DEBUG, remove this else
+
+    const uint32_t DEFAULT_CLASS = priv->queue_n; /* last scheduler queue */
+    uint32_t mark = DEFAULT_CLASS;
+    /* 2) mark packet */
+    // mark dns
+    // mark tcp ack
+    // other
+
+    /* 3) check if class queue is full and drop if it's the case */
+    struct sring_tx_schqueue_context *scq = sring_tx_context_subqueue(priv, mark);
+    if (scq->used >= priv->queue_buffs) {
+        //print_num("txh: drop, class queue is full", 1);
+        print_num('h', 1);
+        return -1; // drop
+    }
+
+    priv->mark = mark;
+
+    //print_num("txh: accept for class queue", 2);
+    print_num('h', 2);
+    return 0;
+}
+
 __section("txp")
 int sring_txp(struct bpfhv_tx_context *ctx)
 {
@@ -28,16 +77,45 @@ int sring_txp(struct bpfhv_tx_context *ctx)
     struct bpfhv_buf *txb = ctx->bufs + 0;
     uint32_t prod = priv->prod;
     struct sring_tx_desc *txd;
+    uint32_t mark, queue_class;
+    struct sring_tx_schqueue_context *scq,*txq_main;
 
     if (ctx->num_bufs != 1) {
+        print_num('p', 0);
         return -1;
     }
 
-    txd = priv->desc + (prod & priv->qmask);
+    txq_main = sring_tx_context_subqueue(priv, 0);
+    mark = priv->mark;
+
+    // 1) check if there is space to add packets. if not, add to class queue
+    /*queued = (prod >= cons) ? (prod - cons) : (priv->queue_buffs - cons + prod);
+    queue_class = (queued >= priv->queue_buffs) ? mark : 0; */
+    queue_class = mark;
+    scq = sring_tx_context_subqueue(priv, queue_class);
+    prod = (queue_class == 0) ? priv->prod : scq->prod;
+
+    txd = scq->desc + (prod & priv->qmask);
     txd->cookie = txb->cookie;
     txd->paddr = txb->paddr;
     txd->len = txb->len;
 
+    /* packet goes in a scheduler queue */
+    if(queue_class != 0) {
+        /* queue cannot be full because it is checked in sring_txh routine */
+        scq->used++;
+        scq->prod++;
+        priv->total_queued_buffs++;
+        // we don't need memory barriers because subqueues are guest only
+        // (publish and complete are synchronous)
+        //print_num("scheduled to queue", 10);
+        print_num('p', 1);
+        return 0; // TODO: should we enable kicks?
+    }
+    //print_num("not scheduled to queue", 11);
+    print_num('p', 2);
+
+    /* packet goes in transmit queue */
     /* Make sure stores to sring entries happen before store to priv->prod. */
     smp_mb_release();
     ACCESS_ONCE(priv->prod) = prod + 1;
@@ -51,6 +129,69 @@ int sring_txp(struct bpfhv_tx_context *ctx)
     return 0;
 }
 
+static int
+sring_scheduler_dequeue_one(struct sring_tx_context *priv) {
+    struct sring_tx_schqueue_context *scq;
+    struct sring_tx_schqueue_context *txq_main = sring_tx_context_subqueue(priv, 0);
+    struct sring_tx_desc *scq_head;
+    struct sring_tx_desc *txd_prod;
+    uint32_t current_queue = priv->current_queue;
+
+    /* nothing to schedule */
+    if(priv->total_queued_buffs == 0)
+        return 0;
+
+    /* resume dequeuing starting from last queue and deficit */
+    for(int i = current_queue; /* no loop bound? */; ++i) {
+        scq = sring_tx_context_subqueue(priv, (i % priv->queue_n)+1);
+        if(scq->used != 0) {
+            /* don't add deficit if last time there were more packets to pick from current_queue */
+            scq->deficit += scq->quantum*scq->weight*priv->add_deficit;
+            scq_head = scq->desc + (scq->cons & priv->qmask);
+
+            if(scq->used != 0 && scq->deficit >= scq_head->len) {
+                scq->deficit -= scq_head->len;
+
+                /* Copy head packet descriptor to main queue head packet descriptor */
+                txd_prod = txq_main->desc + (priv->prod & priv->qmask);
+                txd_prod->cookie = scq_head->cookie;
+                txd_prod->paddr = scq_head->paddr;
+                txd_prod->len = scq_head->len;
+
+                /* Make sure stores to sring entries happen before store to priv->prod. */
+                smp_mb_release();
+                ACCESS_ONCE(priv->prod) = priv->prod + 1;
+                /* Full memory barrier to make sure store to priv->prod happens
+                 * before load from priv->kick_enabled (see corresponding double-check
+                 * in the hypervisor/backend TXQ drain routine). */
+                smp_mb_full();
+
+                scq->cons++;
+                scq->used--;
+                priv->total_queued_buffs--;
+
+                /* next dequeuing should start from current queue if not empty, otherwise
+                 * we should pick next queue */
+                scq_head = scq->desc + (scq->cons & priv->qmask);
+                priv->add_deficit = (scq->used != 0 && scq->deficit >= scq_head->len) ? 0 : 1;
+                priv->current_queue = (priv->add_deficit) ? ((i+1) % priv->queue_n) : (i % priv->queue_n);
+
+                /* deficit is cumulated only if list is not empty */
+                if(scq->used == 0)
+                    scq->deficit = 0;
+
+                return 1;
+            }
+        }
+
+        /* if moving to next queue, than deficit should be added */
+        priv->add_deficit = 1;
+    }
+
+    /* we should never get here */
+    return 0;
+}
+
 static inline void
 sring_tx_get_one(struct bpfhv_tx_context *ctx,
                  struct sring_tx_context *priv)
@@ -58,7 +199,7 @@ sring_tx_get_one(struct bpfhv_tx_context *ctx,
     struct bpfhv_buf *txb = ctx->bufs + 0;
     struct sring_tx_desc *txd;
 
-    txd = priv->desc + (priv->clear & priv->qmask);
+    txd = sring_tx_context_subqueue(priv, 0)->desc + (priv->clear & priv->qmask);
     txb->paddr = txd->paddr;
     txb->len = txd->len;
     txb->cookie = txd->cookie;
@@ -79,7 +220,11 @@ int sring_txc(struct bpfhv_tx_context *ctx)
      * entries in sring_tx_get_one(). */
     smp_mb_acquire();
 
+    /* Clear one packet through context */
     sring_tx_get_one(ctx, priv);
+
+    /* Schedule one packet to transmit from scheduler queues */
+    //sring_scheduler_dequeue_one(priv);
     ctx->oflags = 0;
 
     return 1;
@@ -98,7 +243,7 @@ int sring_txr(struct bpfhv_tx_context *ctx)
         return 0;
     }
     smp_mb_acquire();
-
+    //TODO: should remove packets
     sring_tx_get_one(ctx, priv);
     if (cons_met) {
         ACCESS_ONCE(priv->cons) = priv->clear;
@@ -118,6 +263,11 @@ int sring_txi(struct bpfhv_tx_context *ctx)
     if (ctx->min_completed_bufs == 0) {
         return 0;
     }
+
+    /* min_completed_bufs must be capped to half transmit queue size
+     * because num_tx_bufs = #transmit_buffs + N*#subqueue bufs */
+    if(ctx->min_completed_bufs > priv->queue_buffs/2)
+        ctx->min_completed_bufs = priv->queue_buffs/2;
 
     cons = ACCESS_ONCE(priv->cons);
     ncompl = cons - priv->clear;
