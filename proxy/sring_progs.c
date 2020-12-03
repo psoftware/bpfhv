@@ -6,12 +6,7 @@
    __attribute__((section(NAME), used))
 #endif
 
-#if 0
-    static int BPFHV_FUNC(print_num, char c, long long int num);
-#else
-    #define print_num(c,num)
-#endif
-
+static int BPFHV_FUNC(print_num, char c, long long int num);
 static int BPFHV_FUNC(rx_pkt_alloc, struct bpfhv_rx_context *ctx);
 static int BPFHV_FUNC(smp_mb_full);
 
@@ -34,19 +29,16 @@ int sring_txh(struct bpfhv_tx_context *ctx)
 {
     struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
     uint32_t prod = priv->prod;
-    //uint32_t cons = ACCESS_ONCE(priv->cons);
     uint32_t clear = priv->clear;
 
     /* 1) check if transmit queue has space, in that case we can directly transmit */
-    uint32_t queued = (prod >= clear) ? (prod - priv->clear) : (priv->queue_buffs - priv->clear + prod);
-    print_num('h', queued);
+    uint32_t queued = (prod >= clear) ? (prod - clear) : (priv->queue_buffs - clear + prod);
+
     if(queued < priv->queue_buffs) {
         //print_num("txh: accept for transmit queue", 0);
         priv->mark = 0; /* mark as direct transmission to transmit queue */
-        print_num('h', 0);
         return 0;
-    } else
-        return -1; // DEBUG, remove this else
+    }
 
     const uint32_t DEFAULT_CLASS = priv->queue_n; /* last scheduler queue */
     uint32_t mark = DEFAULT_CLASS;
@@ -59,14 +51,12 @@ int sring_txh(struct bpfhv_tx_context *ctx)
     struct sring_tx_schqueue_context *scq = sring_tx_context_subqueue(priv, mark);
     if (scq->used >= priv->queue_buffs) {
         //print_num("txh: drop, class queue is full", 1);
-        print_num('h', 1);
         return -1; // drop
     }
 
     priv->mark = mark;
 
     //print_num("txh: accept for class queue", 2);
-    print_num('h', 2);
     return 0;
 }
 
@@ -77,23 +67,21 @@ int sring_txp(struct bpfhv_tx_context *ctx)
     struct bpfhv_buf *txb = ctx->bufs + 0;
     uint32_t prod = priv->prod;
     struct sring_tx_desc *txd;
-    uint32_t mark, queue_class;
+    uint32_t queue_class;
     struct sring_tx_schqueue_context *scq,*txq_main;
 
     if (ctx->num_bufs != 1) {
-        print_num('p', 0);
         return -1;
     }
 
     txq_main = sring_tx_context_subqueue(priv, 0);
-    mark = priv->mark;
+    queue_class = priv->mark;
 
     // 1) check if there is space to add packets. if not, add to class queue
-    /*queued = (prod >= cons) ? (prod - cons) : (priv->queue_buffs - cons + prod);
+    /*queued = (prod >= clear) ? (prod - clear) : (priv->queue_buffs - clear + prod);
     queue_class = (queued >= priv->queue_buffs) ? mark : 0; */
-    queue_class = mark;
     scq = sring_tx_context_subqueue(priv, queue_class);
-    prod = (queue_class == 0) ? priv->prod : scq->prod;
+    prod = (queue_class == 0) ? prod : scq->prod;
 
     txd = scq->desc + (prod & priv->qmask);
     txd->cookie = txb->cookie;
@@ -109,20 +97,18 @@ int sring_txp(struct bpfhv_tx_context *ctx)
         // we don't need memory barriers because subqueues are guest only
         // (publish and complete are synchronous)
         //print_num("scheduled to queue", 10);
-        print_num('p', 1);
-        return 0; // TODO: should we enable kicks?
-    }
-    //print_num("not scheduled to queue", 11);
-    print_num('p', 2);
+    } else {
+        //print_num("not scheduled to queue", 11);
 
-    /* packet goes in transmit queue */
-    /* Make sure stores to sring entries happen before store to priv->prod. */
-    smp_mb_release();
-    ACCESS_ONCE(priv->prod) = prod + 1;
-    /* Full memory barrier to make sure store to priv->prod happens
-     * before load from priv->kick_enabled (see corresponding double-check
-     * in the hypervisor/backend TXQ drain routine). */
-    smp_mb_full();
+        /* packet goes in transmit queue */
+        /* Make sure stores to sring entries happen before store to priv->prod. */
+        smp_mb_release();
+        ACCESS_ONCE(priv->prod) = prod + 1;
+        /* Full memory barrier to make sure store to priv->prod happens
+         * before load from priv->kick_enabled (see corresponding double-check
+         * in the hypervisor/backend TXQ drain routine). */
+        smp_mb_full();
+    }
     ctx->oflags = ACCESS_ONCE(priv->kick_enabled) ?
                   BPFHV_OFLAGS_KICK_NEEDED : 0;
 
@@ -142,7 +128,7 @@ sring_scheduler_dequeue_one(struct sring_tx_context *priv) {
         return 0;
 
     /* resume dequeuing starting from last queue and deficit */
-    for(int i = current_queue; /* no loop bound? */; ++i) {
+    for(uint32_t i = current_queue; /* no loop bound? */; ++i) {
         scq = sring_tx_context_subqueue(priv, (i % priv->queue_n)+1);
         if(scq->used != 0) {
             /* don't add deficit if last time there were more packets to pick from current_queue */
@@ -189,6 +175,7 @@ sring_scheduler_dequeue_one(struct sring_tx_context *priv) {
     }
 
     /* we should never get here */
+    print_num('%', 99);
     return 0;
 }
 
@@ -224,7 +211,7 @@ int sring_txc(struct bpfhv_tx_context *ctx)
     sring_tx_get_one(ctx, priv);
 
     /* Schedule one packet to transmit from scheduler queues */
-    //sring_scheduler_dequeue_one(priv);
+    sring_scheduler_dequeue_one(priv);
     ctx->oflags = 0;
 
     return 1;
