@@ -80,12 +80,12 @@ struct sring_tx_context {
 struct sring_tx_schqueue_context * sring_tx_context_subqueue_static(uint32_t queue_buffs, uint32_t i) {
     struct sring_tx_context* priv = 0;
     return (struct sring_tx_schqueue_context*)
-        (&priv->queue + i*(sizeof(struct sring_tx_schqueue_context) + queue_buffs*sizeof(struct sring_tx_desc)));
+        (priv->queue + i*(sizeof(struct sring_tx_schqueue_context) + queue_buffs*sizeof(struct sring_tx_desc)));
 }
 
 struct sring_tx_schqueue_context * sring_tx_context_subqueue(struct sring_tx_context* priv, uint32_t i) {
     return (struct sring_tx_schqueue_context*)
-        (&priv->queue + i*(sizeof(struct sring_tx_schqueue_context) + priv->queue_buffs*sizeof(struct sring_tx_desc)));
+        (priv->queue + i*(sizeof(struct sring_tx_schqueue_context) + priv->queue_buffs*sizeof(struct sring_tx_desc)));
 }
 
 struct sring_rx_desc {
