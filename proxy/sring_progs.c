@@ -70,7 +70,7 @@ int sring_txh(struct bpfhv_tx_context *ctx)
     uint32_t clear = priv->clear;
 
     /* 1) check if transmit queue has space, in that case we can directly transmit */
-    uint32_t queued = (prod >= clear) ? (prod - clear) : (priv->queue_buffs - clear + prod);
+    uint32_t queued = prod - clear;
 
     if(queued < priv->queue_buffs) {
         //print_num("txh: accept for transmit queue", 0);
