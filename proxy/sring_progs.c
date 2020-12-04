@@ -162,14 +162,15 @@ sring_scheduler_dequeue_one(struct sring_tx_context *priv) {
         return 0;
 
     /* resume dequeuing starting from last queue and deficit */
-    for(uint32_t i = current_queue; /* no loop bound? */; ++i) {
-        scq = sring_tx_context_subqueue(priv, (i % priv->queue_n)+1);
+    for(uint32_t i = current_queue; /* no loop bound? */; i = (i+1) % priv->queue_n) {
+        scq = sring_tx_context_subqueue(priv, i+1);
         if(scq->used != 0) {
             /* don't add deficit if last time there were more packets to pick from current_queue */
             scq->deficit += scq->quantum*scq->weight*priv->add_deficit;
             scq_head = scq->desc + (scq->cons & priv->qmask);
 
-            if(scq->used != 0 && scq->deficit >= scq_head->len) {
+            //while(scq->used != 0 && scq->deficit >= scq_head->len) {
+            if(scq->deficit >= scq_head->len) {
                 scq->deficit -= scq_head->len;
 
                 /* Copy head packet descriptor to main queue head packet descriptor */
@@ -194,7 +195,7 @@ sring_scheduler_dequeue_one(struct sring_tx_context *priv) {
                  * we should pick next queue */
                 scq_head = scq->desc + (scq->cons & priv->qmask);
                 priv->add_deficit = (scq->used != 0 && scq->deficit >= scq_head->len) ? 0 : 1;
-                priv->current_queue = (priv->add_deficit) ? ((i+1) % priv->queue_n) : (i % priv->queue_n);
+                priv->current_queue = (priv->add_deficit) ? ((i+1) % priv->queue_n) : i;
 
                 /* deficit is cumulated only if list is not empty */
                 if(scq->used == 0)
