@@ -918,6 +918,18 @@ BPF_CALL_2(bpf_hv_print_num, char, c, long long int, x)
     return 0;
 }
 
+BPF_CALL_1(bpf_hv_pkt_transport_header, struct bpfhv_tx_context *, ctx)
+{
+	struct sk_buff *skb = (struct sk_buff *)(uintptr_t)ctx->packet;
+	return (uintptr_t)skb_transport_header(skb);
+}
+
+BPF_CALL_1(bpf_hv_pkt_network_header, struct bpfhv_tx_context *, ctx)
+{
+	struct sk_buff *skb = (struct sk_buff *)(uintptr_t)ctx->packet;
+	return (uintptr_t)skb_network_header(skb);
+}
+
 #undef PROGDUMP
 #ifdef PROGDUMP
 static void
@@ -1227,6 +1239,12 @@ bpfhv_helper_calls_fixup(struct bpfhv_info *bi, struct bpf_insn *insns,
 			break;
 		case BPFHV_FUNC_print_num:
 			func = bpf_hv_print_num;
+			break;
+		case BPFHV_FUNC_pkt_transport_header:
+			func = bpf_hv_pkt_transport_header;
+			break;
+		case BPFHV_FUNC_pkt_network_header:
+			func = bpf_hv_pkt_network_header;
 			break;
 		default:
 			netif_err(bi, drv, bi->netdev,

@@ -1,5 +1,6 @@
 #include "bpfhv.h"
 #include "sring.h"
+#include "net_headers.h"
 
 #ifndef __section
 # define __section(NAME)                  \
@@ -8,6 +9,8 @@
 
 static int BPFHV_FUNC(print_num, char c, long long int num);
 static int BPFHV_FUNC(rx_pkt_alloc, struct bpfhv_rx_context *ctx);
+static void* BPFHV_FUNC(pkt_network_header, struct bpfhv_tx_context *ctx);
+static void* BPFHV_FUNC(pkt_transport_header, struct bpfhv_tx_context *ctx);
 static int BPFHV_FUNC(smp_mb_full);
 
 
@@ -20,6 +23,41 @@ static inline int
 clear_met_cons(uint32_t old_clear, uint32_t cons, uint32_t new_clear)
 {
     return (uint32_t)(new_clear - cons - 1) < (uint32_t)(new_clear - old_clear);
+}
+
+uint32_t mark_packet(struct bpfhv_tx_context *ctx) {
+    /* 1) extract data from packet for marking */
+    struct iphdr *iph = (struct iphdr *)pkt_network_header(ctx);
+
+    void *transport_header = pkt_transport_header(ctx);
+    struct udphdr *udp_header;
+    struct tcphdr *tcp_header;
+    uint32_t src_ip = (unsigned int)iph->saddr;
+    uint32_t dest_ip = (unsigned int)iph->daddr;
+    uint16_t src_port = 0;
+    uint16_t dest_port = 0;
+
+    if (iph->protocol == IPPROTO_UDP) {
+        udp_header = (struct udphdr *)transport_header;
+        src_port = (unsigned int)be16_to_cpu(udp_header->source);
+    } else if (iph->protocol == IPPROTO_TCP) {
+        tcp_header = (struct tcphdr *)transport_header;
+        src_port = (unsigned int)be16_to_cpu(tcp_header->source);
+        dest_port = (unsigned int)be16_to_cpu(tcp_header->dest);
+    }
+
+    /* 2) mark packets */
+    const uint32_t RESERVED = 0;
+    const uint32_t STREAM_1 = 1;
+    const uint32_t STREAM_2 = 2;
+    const uint32_t DEFAULT_CLASS = 3; /* = priv->queue_n; last scheduler queue */
+    /* rule list */
+    if(iph->protocol == IPPROTO_TCP && dest_port == 30000)
+        return STREAM_1;
+    if(iph->protocol == IPPROTO_TCP && dest_port == 30001)
+        return STREAM_2;
+
+    return DEFAULT_CLASS;
 }
 
 /* Mark packet and drop if there is no space in the related subqueue
@@ -40,12 +78,8 @@ int sring_txh(struct bpfhv_tx_context *ctx)
         return 0;
     }
 
-    const uint32_t DEFAULT_CLASS = priv->queue_n; /* last scheduler queue */
-    uint32_t mark = DEFAULT_CLASS;
     /* 2) mark packet */
-    // mark dns
-    // mark tcp ack
-    // other
+    uint32_t mark = mark_packet(ctx);
 
     /* 3) check if class queue is full and drop if it's the case */
     struct sring_tx_schqueue_context *scq = sring_tx_context_subqueue(priv, mark);

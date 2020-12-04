@@ -107,7 +107,7 @@ sring_tx_ctx_init(struct bpfhv_tx_context *ctx, size_t num_tx_bufs)
         scq->prod = scq->cons = scq->used = 0;
         scq->deficit = 0;
         scq->quantum = 1500;
-        scq->weight = i+1;
+        scq->weight = i*16+1;
         memset(scq->desc, 0, (num_tx_bufs/TOTAL_TX_QUEUE_N)*sizeof(scq->desc[0]));
     }
 }
