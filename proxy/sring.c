@@ -34,7 +34,7 @@ sring_tx_check_alignment(void)
 {
     struct sring_tx_context *priv = NULL;
 
-    assert(256 % TOTAL_TX_QUEUE_N == 0); /* for now queue count should be multiple of num_tx_buffs */
+    assert(NUM_TX_BUFFS % TOTAL_TX_QUEUE_N == 0); /* for now queue count should be multiple of num_tx_buffs */
     assert(((uintptr_t)&priv->prod) % MY_CACHELINE_SIZE == 0);
     assert(((uintptr_t)&priv->cons) % MY_CACHELINE_SIZE == 0);
     assert(((uintptr_t)&priv->qmask) % MY_CACHELINE_SIZE == 0);
