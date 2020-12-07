@@ -142,15 +142,15 @@ int sring_txp(struct bpfhv_tx_context *ctx)
          * before load from priv->kick_enabled (see corresponding double-check
          * in the hypervisor/backend TXQ drain routine). */
         smp_mb_full();
-    }
-    ctx->oflags = ACCESS_ONCE(priv->kick_enabled) ?
+        ctx->oflags = ACCESS_ONCE(priv->kick_enabled) ?
                   BPFHV_OFLAGS_KICK_NEEDED : 0;
+    }
 
     return 0;
 }
 
 static int
-sring_scheduler_dequeue_one(struct sring_tx_context *priv) {
+sring_scheduler_dequeue_one(struct bpfhv_tx_context *ctx, struct sring_tx_context *priv) {
     struct sring_tx_schqueue_context *scq;
     struct sring_tx_schqueue_context *txq_main = sring_tx_context_subqueue(priv, 0);
     struct sring_tx_desc *scq_head;
@@ -158,8 +158,10 @@ sring_scheduler_dequeue_one(struct sring_tx_context *priv) {
     uint32_t current_queue = priv->current_queue;
 
     /* nothing to schedule */
-    if(priv->total_queued_buffs == 0)
+    if(priv->total_queued_buffs == 0) {
+        ctx->oflags = 0;
         return 0;
+    }
 
     /* resume dequeuing starting from last queue and deficit */
     for(uint32_t i = current_queue; /* no loop bound? */; i = (i+1) % priv->queue_n) {
@@ -186,6 +188,7 @@ sring_scheduler_dequeue_one(struct sring_tx_context *priv) {
                  * before load from priv->kick_enabled (see corresponding double-check
                  * in the hypervisor/backend TXQ drain routine). */
                 smp_mb_full();
+                ctx->oflags = ACCESS_ONCE(priv->kick_enabled) ? BPFHV_OFLAGS_KICK_NEEDED : 0;
 
                 scq->cons++;
                 scq->used--;
@@ -246,8 +249,7 @@ int sring_txc(struct bpfhv_tx_context *ctx)
     sring_tx_get_one(ctx, priv);
 
     /* Schedule one packet to transmit from scheduler queues */
-    sring_scheduler_dequeue_one(priv);
-    ctx->oflags = 0;
+    sring_scheduler_dequeue_one(ctx, priv);
 
     return 1;
 }
@@ -288,8 +290,8 @@ int sring_txi(struct bpfhv_tx_context *ctx)
 
     /* min_completed_bufs must be capped to half transmit queue size
      * because num_tx_bufs = #transmit_buffs + N*#subqueue bufs */
-    if(ctx->min_completed_bufs > priv->queue_buffs/2)
-        ctx->min_completed_bufs = priv->queue_buffs/2;
+    if(ctx->min_completed_bufs > 1 + priv->queue_buffs/2)
+        ctx->min_completed_bufs = 1 + priv->queue_buffs/2;
 
     cons = ACCESS_ONCE(priv->cons);
     ncompl = cons - priv->clear;

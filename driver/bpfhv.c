@@ -1778,6 +1778,7 @@ bpfhv_tx_clean(struct bpfhv_txq *txq, bool in_napi)
 {
 	struct bpfhv_info *bi = txq->bi;
 	int count;
+	int must_kick = 0;
 
 	for (count = 0;; count++) {
 		int ret;
@@ -1794,7 +1795,16 @@ bpfhv_tx_clean(struct bpfhv_txq *txq, bool in_napi)
 			break;
 		}
 
+		if (txq->ctx->oflags & BPFHV_OFLAGS_KICK_NEEDED) {
+			must_kick = true;
+		}
+
 		bpfhv_tx_ctx_clean(txq, in_napi);
+	}
+
+	if (must_kick) {
+		must_kick = false;
+		writel(0, txq->doorbell);
 	}
 
 	if (count) {
