@@ -41,7 +41,8 @@ struct sring_tx_schqueue_context {
     uint32_t prod;
     uint32_t cons;
     uint32_t used;
-    uint32_t pad1[26];
+    uint32_t qmask;
+    uint32_t pad1[25];
 
     struct sring_tx_desc desc[0];
 };
@@ -60,7 +61,7 @@ struct sring_tx_context {
     /* Guest reads, hv reads. */
     uint32_t qmask; // delete this, it should be queue_buffs-1
     uint32_t queue_n;
-    uint32_t queue_buffs;
+    uint32_t max_queue_buffs;
     uint32_t pad3[29];
 
     /* Private to the guest. */
@@ -77,15 +78,15 @@ struct sring_tx_context {
     uint8_t queue[0];
 };
 
-struct sring_tx_schqueue_context * sring_tx_context_subqueue_static(uint32_t queue_buffs, uint32_t i) {
+struct sring_tx_schqueue_context * sring_tx_context_subqueue_static(uint32_t max_queue_buffs, uint32_t i) {
     struct sring_tx_context* priv = 0;
     return (struct sring_tx_schqueue_context*)
-        (priv->queue + i*(sizeof(struct sring_tx_schqueue_context) + queue_buffs*sizeof(struct sring_tx_desc)));
+        (priv->queue + i*(sizeof(struct sring_tx_schqueue_context) + max_queue_buffs*sizeof(struct sring_tx_desc)));
 }
 
 struct sring_tx_schqueue_context * sring_tx_context_subqueue(struct sring_tx_context* priv, uint32_t i) {
     return (struct sring_tx_schqueue_context*)
-        (priv->queue + i*(sizeof(struct sring_tx_schqueue_context) + priv->queue_buffs*sizeof(struct sring_tx_desc)));
+        (priv->queue + i*(sizeof(struct sring_tx_schqueue_context) + priv->max_queue_buffs*sizeof(struct sring_tx_desc)));
 }
 
 struct sring_rx_desc {

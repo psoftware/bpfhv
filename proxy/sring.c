@@ -15,7 +15,6 @@
 #define MY_CACHELINE_SIZE   64
 #define SCHED_TX_QUEUE_N 3
 #define TOTAL_TX_QUEUE_N (1 + SCHED_TX_QUEUE_N)
-#define NUM_TX_BUFFS 256
 
 static void
 sring_rx_check_alignment(void)
@@ -34,12 +33,12 @@ sring_tx_check_alignment(void)
 {
     struct sring_tx_context *priv = NULL;
 
-    assert(NUM_TX_BUFFS % TOTAL_TX_QUEUE_N == 0); /* for now queue count should be multiple of num_tx_buffs */
     assert(((uintptr_t)&priv->prod) % MY_CACHELINE_SIZE == 0);
     assert(((uintptr_t)&priv->cons) % MY_CACHELINE_SIZE == 0);
     assert(((uintptr_t)&priv->qmask) % MY_CACHELINE_SIZE == 0);
     assert(((uintptr_t)&priv->clear) % MY_CACHELINE_SIZE == 0);
-    assert(((uintptr_t)&sring_tx_context_subqueue_static(NUM_TX_BUFFS/TOTAL_TX_QUEUE_N, 0)->desc[0]) % MY_CACHELINE_SIZE == 0);
+    assert(((uintptr_t)&sring_tx_context_subqueue_static(0 /*does not change the result*/, 0)->desc[0])
+             % MY_CACHELINE_SIZE == 0);
 }
 
 static size_t
@@ -49,13 +48,29 @@ sring_rx_ctx_size(size_t num_rx_bufs)
 	num_rx_bufs * sizeof(struct sring_rx_desc);
 }
 
+#define SCHED_QUANTUM 1500
+uint32_t queue_weight[] = {1,1,200};
+/* last size is for tx ring */
+uint32_t queue_size[] = {32,32,64,128};
+/* max_queue_size will be our "alignment" for indexing all the queues  */
+uint32_t max_queue_size;
+
 static size_t
 sring_tx_ctx_size(size_t num_tx_bufs)
 {
-    assert(num_tx_bufs == NUM_TX_BUFFS);
-    // TODO: this is horrible and should be generalized
+    max_queue_size = 0;
+
+    /* sum of queue sizes should be equal to available buffers */
+    uint32_t sum = 0;
+    for(int i = 0; i < TOTAL_TX_QUEUE_N; i++) {
+        sum += queue_size[i];
+        if(queue_size[i] > max_queue_size)
+            max_queue_size = queue_size[i];
+    }
+    assert(sum == num_tx_bufs);
+
     return sizeof(struct bpfhv_tx_context) + sizeof(struct sring_tx_context) +
-        TOTAL_TX_QUEUE_N*(sizeof(struct sring_tx_schqueue_context) + sizeof(struct sring_tx_desc)*(num_tx_bufs/TOTAL_TX_QUEUE_N));
+        TOTAL_TX_QUEUE_N*(sizeof(struct sring_tx_schqueue_context) + sizeof(struct sring_tx_desc)*max_queue_size);
 }
 
 static void
@@ -76,18 +91,11 @@ sring_tx_ctx_init(struct bpfhv_tx_context *ctx, size_t num_tx_bufs)
     struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
 
     assert((num_tx_bufs & (num_tx_bufs - 1)) == 0);
-    priv->qmask = (num_tx_bufs/TOTAL_TX_QUEUE_N) - 1;
     priv->prod = priv->cons = priv->clear = 0;
     priv->kick_enabled = 1;
     priv->intr_at = 0;
-
-    /* init scheduler related context */
-    priv->mark = 0;
-    priv->add_deficit = 1;
-    priv->current_queue = 0;
-    priv->total_queued_buffs = 0;
-    priv->queue_n = SCHED_TX_QUEUE_N;
-    priv->queue_buffs = num_tx_bufs/TOTAL_TX_QUEUE_N;
+    priv->max_queue_buffs = max_queue_size;
+    priv->qmask = queue_size[SCHED_TX_QUEUE_N] - 1;
 
     struct sring_tx_schqueue_context *txq_main = sring_tx_context_subqueue(priv, 0);
     // this fields are never used
@@ -96,20 +104,30 @@ sring_tx_ctx_init(struct bpfhv_tx_context *ctx, size_t num_tx_bufs)
     txq_main->quantum = 0;
     txq_main->weight = 0;
     //
-    memset(txq_main->desc, 0, (num_tx_bufs/TOTAL_TX_QUEUE_N)*sizeof(txq_main->desc[0]));
+    memset(txq_main->desc, 0, queue_size[SCHED_TX_QUEUE_N]*sizeof(txq_main->desc[0]));
 
-    printf("sring.init queue_n %u queue_buffs %u qmask %u\n",
-           ACCESS_ONCE(priv->queue_n), ACCESS_ONCE(priv->queue_buffs),
-           ACCESS_ONCE(priv->qmask));
+    /* init scheduler related context */
+    priv->mark = 0;
+    priv->add_deficit = 1;
+    priv->current_queue = 0;
+    priv->total_queued_buffs = 0;
+    priv->queue_n = SCHED_TX_QUEUE_N;
 
     for(int i=0; i<SCHED_TX_QUEUE_N; i++) {
+        assert((queue_size[i] & (queue_size[i] - 1)) == 0);
+
         struct sring_tx_schqueue_context * scq = sring_tx_context_subqueue(priv, i+1);
         scq->prod = scq->cons = scq->used = 0;
+        scq->qmask = queue_size[i]-1;
         scq->deficit = 0;
-        scq->quantum = 1500;
-        scq->weight = i*16+1;
-        memset(scq->desc, 0, (num_tx_bufs/TOTAL_TX_QUEUE_N)*sizeof(scq->desc[0]));
+        scq->quantum = SCHED_QUANTUM;
+        scq->weight = queue_weight[i];
+        memset(scq->desc, 0, queue_size[i]*sizeof(scq->desc[0]));
     }
+
+    printf("sring.init queue_n %u max_queue_buffs %u qmask %u\n",
+           ACCESS_ONCE(priv->queue_n), ACCESS_ONCE(priv->max_queue_buffs),
+           ACCESS_ONCE(priv->qmask));
 }
 
 static inline void
