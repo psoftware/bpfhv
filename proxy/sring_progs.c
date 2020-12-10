@@ -256,6 +256,39 @@ int sring_txc(struct bpfhv_tx_context *ctx)
     return 1;
 }
 
+static int
+sring_scheduler_reclaim_one(struct bpfhv_tx_context *ctx, struct sring_tx_context *priv) {
+    struct sring_tx_schqueue_context *scq;
+    struct sring_tx_desc *scq_cons;
+    struct bpfhv_buf *txb = ctx->bufs + 0;
+
+    /* nothing to reclaim */
+    if(priv->total_queued_buffs == 0)
+        return 0;
+
+    /* get one packet/buffer without using any policy */
+    for(uint32_t i = 0; i < priv->queue_n; ++i) {
+        scq = sring_tx_context_subqueue(priv, i+1);
+        if(scq->used != 0) {
+            scq_cons = scq->desc + (scq->cons & scq->qmask);
+            txb->paddr = scq_cons->paddr;
+            txb->len = scq_cons->len;
+            txb->cookie = scq_cons->cookie;
+            ctx->num_bufs = 1;
+
+            scq->cons++;
+            scq->used--;
+            priv->total_queued_buffs--;
+
+            return 1;
+        }
+    }
+
+    /* we should never get here */
+    print_num('!', 99);
+    return 0;
+}
+
 __section("txr")
 int sring_txr(struct bpfhv_tx_context *ctx)
 {
@@ -265,11 +298,17 @@ int sring_txr(struct bpfhv_tx_context *ctx)
     uint32_t prod = priv->prod;
     int cons_met = (clear == cons);
 
+    // empty scheduler queues first
+    int sched_reclaimed = sring_scheduler_reclaim_one(ctx, priv);
+    if(sched_reclaimed) {
+        return 1;
+    }
+
     if (clear == prod) {
         return 0;
     }
     smp_mb_acquire();
-    //TODO: should remove packets
+
     sring_tx_get_one(ctx, priv);
     if (cons_met) {
         ACCESS_ONCE(priv->cons) = priv->clear;
