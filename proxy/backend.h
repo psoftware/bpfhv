@@ -64,6 +64,8 @@ typedef void (*BeSyncFun)(struct BpfhvBackend *be);
 typedef struct BeOps {
     void (*rx_check_alignment)(void);
     void (*tx_check_alignment)(void);
+    size_t (*num_rx_bufs)(void);
+    size_t (*num_tx_bufs)(void);
     size_t (*rx_ctx_size)(size_t num_rx_bufs);
     size_t (*tx_ctx_size)(size_t num_rx_bufs);
     void (*rx_ctx_init)(struct bpfhv_rx_context *ctx, size_t num_rx_bufs);

@@ -513,8 +513,7 @@ process_packets(void *opaque)
 static int
 num_bufs_valid(uint64_t num_bufs)
 {
-    if (num_bufs < 16 || num_bufs > 8192 ||
-            (num_bufs & (num_bufs - 1)) != 0) {
+    if (num_bufs < 16 || num_bufs > 8192) {
         return 0;
     }
     return 1;
@@ -788,6 +787,7 @@ main_loop(BpfhvBackend *be)
 
         /* Check that payload size is correct. */
         switch (msg.hdr.reqtype) {
+        case BPFHV_PROXY_REQ_GET_PARAMETERS:
         case BPFHV_PROXY_REQ_GET_FEATURES:
         case BPFHV_PROXY_REQ_GET_PROGRAMS:
         case BPFHV_PROXY_REQ_RX_ENABLE:
@@ -926,6 +926,17 @@ main_loop(BpfhvBackend *be)
                              "TX%u", i-be->num_queue_pairs);
                 }
             }
+            break;
+        }
+
+        case BPFHV_PROXY_REQ_GET_PARAMETERS: {
+            resp.hdr.size = sizeof(resp.payload.params);
+            resp.payload.params.num_tx_bufs =
+                    (be->ops.num_tx_bufs) ? be->ops.num_tx_bufs() : 256;
+            resp.payload.params.num_rx_bufs =
+                    (be->ops.num_rx_bufs) ? be->ops.num_rx_bufs() : 256;
+            //resp.payload.params.num_rx_bufs = 0; // not impl
+            //resp.payload.params.num_tx_bufs = 0; // not impl
             break;
         }
 
