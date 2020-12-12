@@ -53,20 +53,30 @@ uint32_t queue_weight[] = {1,1,200};
 /* last size is for tx ring */
 uint32_t queue_size[] = {32,32,64,128};
 /* max_queue_size will be our "alignment" for indexing all the queues  */
-uint32_t max_queue_size;
+uint32_t max_queue_size, sum;
 
 static size_t
-sring_tx_ctx_size(size_t num_tx_bufs)
+sring_num_rx_bufs()
 {
-    max_queue_size = 0;
+    return 256;
+}
 
-    /* sum of queue sizes should be equal to available buffers */
-    uint32_t sum = 0;
+static size_t
+sring_num_tx_bufs()
+{
+    sum = 0; max_queue_size = 0;
     for(int i = 0; i < TOTAL_TX_QUEUE_N; i++) {
         sum += queue_size[i];
         if(queue_size[i] > max_queue_size)
             max_queue_size = queue_size[i];
     }
+    return sum;
+}
+
+static size_t
+sring_tx_ctx_size(size_t num_tx_bufs)
+{
+    /* available buffers should equal requested buffers */
     assert(sum == num_tx_bufs);
 
     return sizeof(struct bpfhv_tx_context) + sizeof(struct sring_tx_context) +
@@ -90,7 +100,6 @@ sring_tx_ctx_init(struct bpfhv_tx_context *ctx, size_t num_tx_bufs)
 {
     struct sring_tx_context *priv = (struct sring_tx_context *)ctx->opaque;
 
-    assert((num_tx_bufs & (num_tx_bufs - 1)) == 0);
     priv->prod = priv->cons = priv->clear = 0;
     priv->kick_enabled = 1;
     priv->intr_at = 0;
@@ -390,6 +399,8 @@ sring_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
 BeOps sring_ops = {
     .rx_check_alignment = sring_rx_check_alignment,
     .tx_check_alignment = sring_tx_check_alignment,
+    .num_rx_bufs = sring_num_rx_bufs,
+    .num_tx_bufs = sring_num_tx_bufs,
     .rx_ctx_size = sring_rx_ctx_size,
     .tx_ctx_size = sring_tx_ctx_size,
     .rx_ctx_init = sring_rx_ctx_init,
