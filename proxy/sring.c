@@ -13,8 +13,24 @@
 #include "sring.h"
 
 #define MY_CACHELINE_SIZE   64
-#define SCHED_TX_QUEUE_N 3
+
+/* sanitize compiler provided defines */
+#if SCHED_DRR_QUEUE_COUNT <= 0
+    #error "SCHED_DRR_QUEUE_COUNT not valid!"
+#elif SCHED_DRR_QUEUE_RING_QUANTUM <= 0
+    #error "SCHED_DRR_QUEUE_RING_QUANTUM not valid!"
+#endif
+
+#define SCHED_TX_QUEUE_N SCHED_DRR_QUEUE_COUNT
 #define TOTAL_TX_QUEUE_N (1 + SCHED_TX_QUEUE_N)
+#define SCHED_QUANTUM SCHED_DRR_QUEUE_RING_QUANTUM
+
+/* TODO: sanitize SCHED_DRR_QUEUE_RING_SIZES/SCHED_DRR_QUEUE_RING_WEIGHTS
+ * wrt TOTAL_TX_QUEUE_N/SCHED_TX_QUEUE_N*/
+/* TODO: sanitize SCHED_DRR_QUEUE_RING_SIZES: sizes should be power of 2 */
+/* last size is for tx ring */
+uint32_t queue_size[TOTAL_TX_QUEUE_N] = {SCHED_DRR_QUEUE_RING_SIZES};
+uint32_t queue_weight[SCHED_TX_QUEUE_N] = {SCHED_DRR_QUEUE_RING_WEIGHTS};
 
 static void
 sring_rx_check_alignment(void)
@@ -48,18 +64,14 @@ sring_rx_ctx_size(size_t num_rx_bufs)
 	num_rx_bufs * sizeof(struct sring_rx_desc);
 }
 
-#define SCHED_QUANTUM 1500
-uint32_t queue_weight[] = {1,1,200};
-/* last size is for tx ring */
-uint32_t queue_size[] = {32,32,64,128};
-/* max_queue_size will be our "alignment" for indexing all the queues  */
-uint32_t max_queue_size, sum;
-
 static size_t
 sring_num_rx_bufs()
 {
     return 256;
 }
+
+/* max_queue_size will be our "alignment" for indexing all the queues  */
+uint32_t max_queue_size, sum;
 
 static size_t
 sring_num_tx_bufs()

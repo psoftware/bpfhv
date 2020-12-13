@@ -1,5 +1,11 @@
 #!/bin/bash
 
+# Default sring DRR sched parameters
+SCHED_DRR_QUEUE_COUNT="3"
+SCHED_DRR_QUEUE_RING_SIZES="256,256,256,32" # last is tx ring size
+SCHED_DRR_QUEUE_RING_QUANTUM="1500"
+SCHED_DRR_QUEUE_RING_WEIGHTS="1,1,200"
+
 usage() {
     cat <<EOF
 configure options:
@@ -10,6 +16,13 @@ configure options:
     --nodriver                  Don't build the guest kernel driver
     --noproxy                   Don't build proxy code
     --netmap			Build the proxy backend with netmap support
+
+Deficit Round Robin scheduler options:
+
+    --drr-rings                 Set queue count (default $SCHED_DRR_QUEUE_COUNT)
+    --drr-ring-sizes            Array of ring sizes (default $SCHED_DRR_QUEUE_RING_SIZES)
+    --drr-ring-weights          Array of queue weights (default $SCHED_DRR_QUEUE_RING_WEIGHTS)
+    --drr-quantum               Set quantum value (default $SCHED_DRR_QUEUE_RING_QUANTUM)
 EOF
 }
 
@@ -68,6 +81,43 @@ do
         NETMAP="y"
         ;;
 
+        "--drr-rings")
+        if [ -n "$2" ]; then
+            SCHED_DRR_QUEUE_COUNT=$2
+            shift
+        else
+            echo "--drr-rings requires a value"
+            exit 255
+        fi
+        ;;
+        "--drr-ring-sizes")
+        if [ -n "$2" ]; then
+            SCHED_DRR_QUEUE_RING_SIZES=$2
+            shift
+        else
+            echo "--drr-ring-sizes requires a value"
+            exit 255
+        fi
+        ;;
+        "--drr-ring-weights")
+        if [ -n "$2" ]; then
+            SCHED_DRR_QUEUE_RING_WEIGHTS=$2
+            shift
+        else
+            echo "--drr-ring-weights requires a value"
+            exit 255
+        fi
+        ;;
+        "--drr-quantum")
+        if [ -n "$2" ]; then
+            SCHED_DRR_QUEUE_RING_QUANTUM=$2
+            shift
+        else
+            echo "--drr-quantum requires a value"
+            exit 255
+        fi
+        ;;
+
         *)
         echo "Unknown option '$key'"
         echo "Try ./configure --help"
@@ -85,3 +135,9 @@ sed -i "s|@PROXY@|${BUILD_PROXY}|g" $SRCDIR/Makefile
 sed -i "s|@DRIVER@|${BUILD_DRIVER}|g" $SRCDIR/Makefile
 sed -i "s|@INSTALL_MOD_PATH@|${INSTALL_PREFIX}|g" $SRCDIR/Makefile
 sed -i "s|@KERNBUILDDIR@|$KERNBUILDDIR|g" $SRCDIR/Makefile
+
+sed -i "s|@SCHED_DRR_QUEUE_COUNT@|SCHED_DRR_QUEUE_COUNT=$SCHED_DRR_QUEUE_COUNT|g" $SRCDIR/Makefile
+sed -i "s|@SCHED_DRR_QUEUE_RING_SIZES@|SCHED_DRR_QUEUE_RING_SIZES=$SCHED_DRR_QUEUE_RING_SIZES|g" $SRCDIR/Makefile
+sed -i "s|@SCHED_DRR_QUEUE_RING_QUANTUM@|SCHED_DRR_QUEUE_RING_QUANTUM=$SCHED_DRR_QUEUE_RING_QUANTUM|g" $SRCDIR/Makefile
+sed -i "s|@SCHED_DRR_QUEUE_RING_WEIGHTS@|SCHED_DRR_QUEUE_RING_WEIGHTS=$SCHED_DRR_QUEUE_RING_WEIGHTS|g" $SRCDIR/Makefile
+
