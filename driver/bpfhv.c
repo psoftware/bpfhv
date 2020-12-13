@@ -1709,6 +1709,14 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		 * least half of them have been transmitted. */
 		ctx->min_completed_bufs = HALF_PENDING_BUFS(bi, txq);
 		BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_INTRS], ctx);
+		/* INTRS bpf program can potentially not enable interruptions
+		 * if min_completed_buffs have already been consumed.
+		 * this causes not cleared packet to stall. It's not a problem
+		 * for sring and vring, because packets are cleaned on start_xmit,
+		 * but it's an issue if packets are published in bpf complete program */
+		if(ctx->oflags & BPFHV_OFLAGS_CLEAN_NEEDED) {
+			napi_schedule(&txq->napi);
+		}
 	} else {
 		skb_orphan(skb);
 		nf_reset(skb);
@@ -1762,6 +1770,10 @@ bpfhv_tx_poll(struct napi_struct *napi, int budget)
 	/* Enable interrupts and complete NAPI. */
 	ctx->min_completed_bufs = HALF_PENDING_BUFS(bi, txq);
 	more = BPF_PROG_RUN(bi->progs[BPFHV_PROG_TX_INTRS], ctx);
+
+	/* ctx->oflags & BPFHV_OFLAGS_CLEAN_NEEDED is redundant here
+	* because we already perform clean if more work came in the
+	* meanwhile and interruptions are not enabled */
 
 	__netif_tx_unlock(q);
 

@@ -47,6 +47,7 @@ struct bpfhv_buf {
 #define BPFHV_IFLAGS_INTR_NEEDED	(1 << 0)
 #define BPFHV_OFLAGS_KICK_NEEDED	(1 << 0)
 #define BPFHV_OFLAGS_RESCHED_NEEDED	(1 << 1)
+#define BPFHV_OFLAGS_CLEAN_NEEDED	(1 << 2)
 
 /* Context for the transmit-side eBPF programs. */
 struct bpfhv_tx_context {
