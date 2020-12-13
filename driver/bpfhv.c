@@ -1625,6 +1625,12 @@ bpfhv_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 		netif_info(bi, tx_queued, bi->netdev,
 			"txh(%u bytes) --> %d\n", skb->len, ret);
 		if (unlikely(ret)) {
+			/* a kick can still be pending due to previous xmit_more */
+			/* TODO: evaluate if xmit_more should be considered here */
+			if (txq->kick_pending) {
+				txq->kick_pending = false;
+				writel(0, txq->doorbell);
+			}
 			dev_kfree_skb_any(skb);
 			return NETDEV_TX_OK;
 		}
