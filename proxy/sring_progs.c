@@ -330,6 +330,8 @@ int sring_txi(struct bpfhv_tx_context *ctx)
     uint32_t ncompl;
     uint32_t cons;
 
+    ctx->oflags = 0;
+
     if (ctx->min_completed_bufs == 0) {
         return 0;
     }
@@ -343,6 +345,7 @@ int sring_txi(struct bpfhv_tx_context *ctx)
     ncompl = cons - priv->clear;
 
     if (ncompl >= ctx->min_completed_bufs) {
+        ctx->oflags = BPFHV_OFLAGS_CLEAN_NEEDED;
         return 1;
     }
     ACCESS_ONCE(priv->intr_at) = priv->clear + ctx->min_completed_bufs - 1;
@@ -351,6 +354,7 @@ int sring_txi(struct bpfhv_tx_context *ctx)
     smp_mb_full();
     ncompl += ACCESS_ONCE(priv->cons) - cons;
     if (ncompl >= ctx->min_completed_bufs) {
+        ctx->oflags = BPFHV_OFLAGS_CLEAN_NEEDED;
         return 1;
     }
 
