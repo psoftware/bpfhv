@@ -19,7 +19,22 @@
 
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
 
+#define BPFHV_SERVER_PATH       "/tmp/server"
 #define BPFHV_MAX_QUEUES        16
+#define BPFHV_MAX_INSTANCES     128
+#define BPFHV_K_THREADS         4
+#define BPFHV_MAX_THREAD_INSTANCES BPFHV_MAX_INSTANCES/BPFHV_K_THREADS
+#define BPFHV_MAX_SOCKET_DESCR  512
+
+#define BPFHVCTL_DEV_TYPE_TAP      0
+#define BPFHVCTL_DEV_TYPE_SINK     1
+#define BPFHVCTL_DEV_TYPE_SOURCE   2
+#ifdef WITH_NETMAP
+#define BPFHVCTL_DEV_TYPE_NETMAP   3
+#define BPFHVCTL_DEV_TYPE_LAST     BPFHVCTL_DEV_TYPE_NETMAP
+#else
+#define BPFHVCTL_DEV_TYPE_LAST     BPFHVCTL_DEV_TYPE_SOURCE
+#endif
 
 typedef struct BpfhvBackendMemoryRegion {
     uint64_t    gpa_start;
@@ -86,9 +101,6 @@ typedef struct BeOps {
 
 /* Main data structure supporting a single bpfhv vNIC. */
 typedef struct BpfhvBackend {
-    /* A file containing the PID of this process. */
-    const char *pidfile;
-
     /* Socket file descriptor to exchange control message with the
      * hypervisor. */
     int cfd;
@@ -102,20 +114,11 @@ typedef struct BpfhvBackend {
     /* Functions that process receive and transmit queues. */
     BeOps ops;
 
-    /* Set to 1 if we are collecting run-time statistics,
-     * and timestamp useful to compute statistics. */
-    int collect_stats;
-    struct timeval stats_ts;
-
     /* The features we support. */
     uint64_t features_avail;
 
     /* The features selected by the guest. */
     uint64_t features_sel;
-
-    /* Set if the backend is working in busy wait mode. If unset,
-     * blocking synchronization is used. */
-    int busy_wait;
 
     /* Guest memory map. */
     BpfhvBackendMemoryRegion regions[BPFHV_PROXY_MAX_REGIONS];
@@ -143,6 +146,7 @@ typedef struct BpfhvBackend {
     pthread_t th;
 
     /* An eventfd useful to stop the processing thread. */
+    /* TODO: should be in BpfhvBackendBatch */
     int stopfd;
     int stopflag;
 
@@ -155,9 +159,6 @@ typedef struct BpfhvBackend {
 
     /* Maximum size of a received packet. */
     size_t max_rx_pkt_size;
-
-    /* Use sleep() to improve fast consumer situations. */
-    int sleep_usecs;
 
 #ifdef WITH_NETMAP
     struct {
@@ -175,6 +176,34 @@ typedef struct BpfhvBackend {
     /* RX and TX queues (in this order). */
     BpfhvBackendQueue q[BPFHV_MAX_QUEUES];
 } BpfhvBackend;
+
+typedef struct BpfhvBackendBatch {
+    uint16_t used_instances;
+    BpfhvBackend instance[BPFHV_MAX_THREAD_INSTANCES];
+} BpfhvBackendBatch;
+
+typedef struct BpfhvBackendProcess {
+    /* A file containing the PID of this process. */
+    const char *pidfile;
+
+    /* Array to map socket descriptors to BpfhvBackend */
+    BpfhvBackend *sd_backend[BPFHV_MAX_SOCKET_DESCR];
+
+    /* Set if the backend is working in busy wait mode. If unset,
+     * blocking synchronization is used. */
+    int busy_wait;
+
+    /* Set to 1 if we are collecting run-time statistics,
+     * and timestamp useful to compute statistics. */
+    int collect_stats;
+    struct timeval stats_ts;
+
+    /* Use sleep() to improve fast consumer situations. */
+    int sleep_usecs;
+
+    /* batches per thread */
+    BpfhvBackendBatch thread_batch[BPFHV_K_THREADS];
+} BpfhvBackendProcess;
 
 struct virtio_net_hdr_v1 {
 #define VIRTIO_NET_HDR_F_NEEDS_CSUM     1       /* Use csum_start, csum_offset */

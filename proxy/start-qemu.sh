@@ -19,7 +19,8 @@
 #     # mount -t hugetlbfs nodev /dev/hugepages
 
 IMG="${1:-/home/vmaffione/git/vm/netmap.qcow2}"
-SOCK=/var/run/vm20-20.socket
+#SOCK=/var/run/vm20-20.socket
+SOCK=/tmp/server
 NOGRAPHIC=-nographic
 sudo qemu-system-x86_64 ${IMG} \
         -enable-kvm -smp 2 -m 512M -vga std ${NOGRAPHIC} \
@@ -29,6 +30,6 @@ sudo qemu-system-x86_64 ${IMG} \
         -object memory-backend-file,id=mem0,size=512M,mem-path=/dev/hugepages,share=on \
         -device bpfhv-pci,netdev=data20,mac=00:AA:BB:CC:0a:0a \
         -netdev type=bpfhv-proxy,id=data20,chardev=char20 \
-        -chardev socket,id=char20,path=${SOCK},server
+        -chardev socket,id=char20,path=${SOCK}
 
 # sudo socat - UNIX-CONNECT:/var/run/vm20-20.socket
