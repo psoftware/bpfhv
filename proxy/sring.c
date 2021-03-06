@@ -247,7 +247,8 @@ sring_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
 
     for (;;) {
         struct sring_tx_desc *txd = priv->desc + (cons & priv->qmask);
-        struct iovec iov;
+        struct iovec iov[2];
+        uint32_t mark;
         int ret;
 
         if (unlikely(cons == prod)) {
@@ -282,9 +283,13 @@ sring_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
             break;
         }
 
-        iov.iov_base = translate_addr(be, txd->paddr, txd->len);
-        iov.iov_len = txd->len;
-        if (unlikely(iov.iov_base == NULL)) {
+        mark = txd->mark;
+        printf("pkt mark = %u\n", mark);
+        iov[0].iov_base = &mark;
+        iov[0].iov_len = sizeof(mark);
+        iov[1].iov_base = translate_addr(be, txd->paddr, txd->len);
+        iov[1].iov_len = txd->len;
+        if (unlikely(iov[1].iov_base == NULL)) {
             /* Invalid descriptor, just skip it. */
             if (verbose) {
                 fprintf(stderr, "Invalid TX descriptor: gpa%"PRIx64", "
@@ -294,7 +299,7 @@ sring_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
             continue;
         }
 
-        ret = be->send(be, &iov, 1);
+        ret = be->send(be, iov, 2);
         if (unlikely(ret <= 0)) {
             /* Backend is blocked (or failed), so we need to stop.
              * The last packet was not transmitted, so we don't

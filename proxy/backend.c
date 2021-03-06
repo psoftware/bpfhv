@@ -1245,6 +1245,9 @@ send_resp:
     return ret;
 }
 
+/* out of tree module header, should fix this */
+#define IFF_TAP_MARK 0x0040
+
 static int
 tap_alloc(char *ifname, int vnet_hdr_len, int opt_offload)
 {
@@ -1267,7 +1270,7 @@ tap_alloc(char *ifname, int vnet_hdr_len, int opt_offload)
 
     memset(&ifr, 0, sizeof(ifr));
     /* IFF_TAP, IFF_TUN, IFF_NO_PI, IFF_VNET_HDR */
-    ifr.ifr_flags = IFF_TAP | IFF_NO_PI;
+    ifr.ifr_flags = IFF_TAP | IFF_NO_PI | IFF_TAP_MARK;
     if (opt_offload) {
         ifr.ifr_flags |= IFF_VNET_HDR;
     }
