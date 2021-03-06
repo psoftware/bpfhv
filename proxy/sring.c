@@ -284,7 +284,6 @@ sring_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
         }
 
         mark = txd->mark;
-        printf("pkt mark = %u\n", mark);
         iov[0].iov_base = &mark;
         iov[0].iov_len = sizeof(mark);
         iov[1].iov_base = translate_addr(be, txd->paddr, txd->len);
