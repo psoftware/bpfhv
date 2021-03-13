@@ -1,0 +1,9 @@
+# example configuration file
+#
+#	length  bw	pktsize	burst-size
+thread 0
+	10	1920K	60      1
+thread 1 *
+	10	50000G	60	1
+#thread all
+#	3	1m	600	1

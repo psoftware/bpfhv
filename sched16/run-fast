@@ -1,0 +1,12 @@
+#!/bin/sh
+
+fh=2501000
+fl=1200000
+#fl=$fh
+
+i=0
+while [ $i -lt 24 ] ; do
+   sudo sh -c "echo $fl > /sys/devices/system/cpu/cpu$i/cpufreq/scaling_min_freq"
+   sudo sh -c "echo $fh > /sys/devices/system/cpu/cpu$i/cpufreq/scaling_max_freq"
+   i=$(($i + 1))
+done
