@@ -28,7 +28,7 @@ struct sring_tx_desc {
     uint64_t cookie;
     uint64_t paddr;
     uint32_t len;
-    uint32_t pad;
+    uint32_t mark;
 };
 
 struct sring_tx_context {
