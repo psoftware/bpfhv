@@ -131,7 +131,7 @@ wf2qp_enqueue(struct dn_sch_inst *_si, struct dn_queue *q, struct mbuf *m)
     struct dn_fsk *fs = q->fs;
     struct wf2qp_si *si = (struct wf2qp_si *)(_si + 1);
     struct wf2qp_queue *alg_fq;
-    uint64_t len = m->m_pkthdr.len;
+    uint64_t len = m->iov.iov_len;
 
     if (m != q->mq.head) {
 	if (dn_enqueue(q, m, 0)) /* packet was dropped */
@@ -236,13 +236,13 @@ wf2qp_dequeue(struct dn_sch_inst *_si)
 	alg_fq = (struct wf2qp_queue *)q;
 	m = dn_dequeue(q);
 	heap_extract(sch, NULL); /* Remove queue from heap. */
-	si->V += (uint64_t)(m->m_pkthdr.len) * si->inv_wsum;
+	si->V += (uint64_t)(m->iov.iov_len) * si->inv_wsum;
 	alg_fq->S = alg_fq->F;  /* Update start time. */
 	if (q->mq.head == 0) {	/* not backlogged any more. */
 		heap_insert(&si->idle_heap, alg_fq->F, q);
 	} else {			/* Still backlogged. */
 		/* Update F, store in neh or sch */
-		uint64_t len = q->mq.head->m_pkthdr.len;
+		uint64_t len = q->mq.head->iov.iov_len;
 		alg_fq->F += len * alg_fq->inv_w;
 		if (DN_KEY_LEQ(alg_fq->S, si->V)) {
 			heap_insert(sch, alg_fq->F, q);

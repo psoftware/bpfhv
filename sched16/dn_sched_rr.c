@@ -194,7 +194,7 @@ rr_dequeue(struct dn_sch_inst *_si)
 			rr_remove_head(si);
 			continue;
 		}
-		len = m->m_pkthdr.len;
+		len = m->iov.iov_len;
 
 		if (len > rrq->credit) {
 			/* Packet too big */

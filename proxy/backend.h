@@ -17,20 +17,23 @@
 
 #define ROUNDUP(sz, one) ((((sz) + (one) - 1) / (one)) * (one))
 
+#ifndef MIN
 #define MIN(a,b) ((a) < (b) ? (a) : (b))
+#endif
 
 #define BPFHV_SERVER_PATH       "/tmp/server"
 #define BPFHV_MAX_QUEUES        16
 #define BPFHV_MAX_INSTANCES     128
-#define BPFHV_K_THREADS         4
+#define BPFHV_K_THREADS         1
 #define BPFHV_MAX_THREAD_INSTANCES BPFHV_MAX_INSTANCES/BPFHV_K_THREADS
 #define BPFHV_MAX_SOCKET_DESCR  512
 
-#define BPFHVCTL_DEV_TYPE_TAP      0
-#define BPFHVCTL_DEV_TYPE_SINK     1
-#define BPFHVCTL_DEV_TYPE_SOURCE   2
+#define BPFHVCTL_DEV_TYPE_NONE     0
+#define BPFHVCTL_DEV_TYPE_TAP      1
+#define BPFHVCTL_DEV_TYPE_SINK     2
+#define BPFHVCTL_DEV_TYPE_SOURCE   3
 #ifdef WITH_NETMAP
-#define BPFHVCTL_DEV_TYPE_NETMAP   3
+#define BPFHVCTL_DEV_TYPE_NETMAP   4
 #define BPFHVCTL_DEV_TYPE_LAST     BPFHVCTL_DEV_TYPE_NETMAP
 #else
 #define BPFHVCTL_DEV_TYPE_LAST     BPFHVCTL_DEV_TYPE_SOURCE
@@ -76,6 +79,12 @@ typedef ssize_t (*BeRecvFun)(struct BpfhvBackend *be, const struct iovec *iov,
                              size_t iovcnt);
 typedef void (*BeSyncFun)(struct BpfhvBackend *be);
 
+struct BpfhvBackendProcess;
+
+typedef uint32_t (*SchedEnqueueFun)(struct BpfhvBackendProcess *bp, struct BpfhvBackend *be,
+                             BpfhvBackendQueue *txq, struct iovec iov,
+                             uint64_t opaque_idx, uint32_t mark);
+
 typedef struct BeOps {
     void (*rx_check_alignment)(void);
     void (*tx_check_alignment)(void);
@@ -85,8 +94,16 @@ typedef struct BeOps {
     void (*tx_ctx_init)(struct bpfhv_tx_context *ctx, size_t num_tx_bufs);
     size_t (*rxq_push)(struct BpfhvBackend *be,
                       BpfhvBackendQueue *rxq, int *can_receive);
+    /* do acquire, consume and notify packets for in-order buffer consumption */
     size_t (*txq_drain)(struct BpfhvBackend *be,
                        BpfhvBackendQueue *txq, int *can_send);
+    /* split acquire, consume and notify for out of order buffer consumption */
+    size_t (*txq_acquire)(struct BpfhvBackend *be,
+                       BpfhvBackendQueue *txq, int *can_send);
+    void (*txq_release)(struct BpfhvBackend *be,
+                       BpfhvBackendQueue *txq, uint64_t opaque_idx);
+    size_t (*txq_notify)(struct BpfhvBackend *be, BpfhvBackendQueue *txq);
+
     void (*rxq_kicks)(struct bpfhv_rx_context *ctx, int enable);
     void (*txq_kicks)(struct bpfhv_tx_context *ctx, int enable);
     void (*rxq_dump)(struct bpfhv_rx_context *ctx);
@@ -99,8 +116,14 @@ typedef struct BeOps {
     char *progfile;
 } BeOps;
 
+struct BpfhvBackendBatch;
+
 /* Main data structure supporting a single bpfhv vNIC. */
 typedef struct BpfhvBackend {
+    /* Keep reference to batch parent and process */
+    struct BpfhvBackendBatch *parent_bc;
+    struct BpfhvBackendProcess *parent_bp;
+
     /* Socket file descriptor to exchange control message with the
      * hypervisor. */
     int cfd;
@@ -177,7 +200,35 @@ typedef struct BpfhvBackend {
     BpfhvBackendQueue q[BPFHV_MAX_QUEUES];
 } BpfhvBackend;
 
+ 
+/* stopflag values */
+#define BPFHV_STOPFD_NOEVENT        0
+#define BPFHV_STOPFD_HALT           1
+#define BPFHV_STOPFD_ADD_ONE        2
+#define BPFHV_STOPFD_DELETE_ONE     3
+
 typedef struct BpfhvBackendBatch {
+    /* Keep reference to parent process */
+    struct BpfhvBackendProcess *parent_bp;
+
+    /* Thread dedicated to packet processing. */
+    pthread_t th;
+
+    /* Is th running? */
+    unsigned int th_running;
+
+    /* An eventfd useful to stop the processing thread. */
+    int stopfd;
+    int stopflag;
+
+    /* Fields to pass using stopfd */
+    BpfhvBackend *stopfd_backend;
+
+    /* eventfd used to sync message processing thread and packet threads*/
+    int stopcompleted_fd;
+
+    /* Stored backend instances for this batch */
+    uint16_t allocated_instances;
     uint16_t used_instances;
     BpfhvBackend instance[BPFHV_MAX_THREAD_INSTANCES];
 } BpfhvBackendBatch;
@@ -200,6 +251,16 @@ typedef struct BpfhvBackendProcess {
 
     /* Use sleep() to improve fast consumer situations. */
     int sleep_usecs;
+
+    /*********************************/
+    /* Scheduler mode allows to send packets to a scheduler
+     * which sends packets to a unique nic */
+    int scheduler_mode;
+    void *sched_f;
+
+    /* Send and receive to scheduler */
+    SchedEnqueueFun sched_enqueue;
+    /*********************************/
 
     /* batches per thread */
     BpfhvBackendBatch thread_batch[BPFHV_K_THREADS];
@@ -233,7 +294,7 @@ translate_addr(BpfhvBackend *be, uint64_t gpa, uint64_t len)
     BpfhvBackendMemoryRegion  *re = be->regions + 0;
 
     if (unlikely(!(re->gpa_start <= gpa && gpa + len <= re->gpa_end))) {
-        int i;
+        size_t i;
 
         for (i = 1; i < be->num_regions; i++) {
             re = be->regions + i;

@@ -102,6 +102,8 @@ vring_packed_init(struct vring_packed_virtq *vq, size_t num)
     vq->g.avail_wrap_counter = 1;
     vq->g.used_wrap_counter = 1;
     vq->g.avail_used_flags = 1 << VRING_PACKED_DESC_F_AVAIL;
+    vq->g.pending_inuse_counter = 0;
+    vq->g.pending_used_counter = 0;
 
     vq->h.next_avail_idx = 0;
     vq->h.next_used_idx = 0;
@@ -442,6 +444,145 @@ vring_packed_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
     return count;
 }
 
+/* return number of acquired packets */
+static size_t
+vring_packed_txq_acquire(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
+{
+    struct bpfhv_tx_context *ctx = txq->ctx.tx;
+    struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
+    size_t count = 0;
+
+    if (can_send) {
+        /* Disable further kicks and start processing. */
+        vring_packed_notification(vq, /*enable=*/0);
+    }
+
+    txq->notify = 0;
+
+    for (;;) {
+        uint16_t avail_idx = vq->h.next_avail_idx;
+        struct iovec iov;
+
+        if (!vring_packed_more_avail(vq)) {
+            /* We ran out of TX descriptors. In busy-wait mode we can just
+             * bail out. Otherwise we enable TX kicks and double check for
+             * more available descriptors. */
+            if (can_send == NULL) {
+                break;
+            }
+            vring_packed_notification(vq, /*enable=*/1);
+            __atomic_thread_fence(__ATOMIC_SEQ_CST);
+            if (!vring_packed_more_avail(vq)) {
+                break;
+            }
+            vring_packed_notification(vq, /*enable=*/0);
+        }
+
+        if (unlikely(count >= BPFHV_BE_TX_BUDGET)) {
+            break;
+        }
+
+        __atomic_thread_fence(__ATOMIC_ACQUIRE);
+
+        /* Get the next avail descriptor and process it. */
+        iov.iov_base = translate_addr(be, vq->desc[avail_idx].addr,
+                                      vq->desc[avail_idx].len);
+        iov.iov_len = vq->desc[avail_idx].len;
+        if (unlikely(iov.iov_base == NULL)) {
+            /* Invalid descriptor, just skip it. */
+            if (verbose) {
+                fprintf(stderr, "Invalid TX descriptor: gpa%"PRIx64", "
+                                "len %u\n", vq->desc[avail_idx].addr,
+                                vq->desc[avail_idx].len);
+            }
+        } else {
+            // TODO: we could generalize this...
+            // int ret = be->send(be, &iov, 1);
+            /* Although iov can be easily obtained from descriptor at avail_idx,
+             * we don't do that to avoid further cacheline bouncing made by the
+             * scheduler thread. iov is passed by value. */
+            /* int ret = */
+            be->parent_bp->sched_enqueue(be->parent_bp, be, txq,
+                                         iov, (uint64_t)avail_idx, /*TODO: implement mark*/0);
+
+            /* TODO: we actually don't care about dropping not enqueued packets.
+             * also, can_send does not have any meaning when enqueuing to scheduler */
+            // if (unlikely(ret <= 0)) {
+            //     /* Backend is blocked (or failed), so we need to stop.
+            //      * The last packet was not transmitted, so we don't
+            //      * increment 'avail_idx'. */
+            //     if (ret < 0) {
+            //         if (can_send != NULL && errno == EAGAIN) {
+            //             *can_send = 0;
+            //         } else if (verbose) {
+            //             fprintf(stderr, "send() failed: %s\n",
+            //                     strerror(errno));
+            //         }
+            //     }
+            //     break;
+            // }
+        }
+
+        /* Count pending buffers that need to be set as used at some point */
+        vq->g.pending_inuse_counter++;
+
+        /* Advance avail index */
+        vring_packed_advance_avail(vq);
+
+        txq->stats.bufs++;
+        count++;
+    }
+
+    return count;
+}
+
+static void
+vring_packed_txq_release(BpfhvBackend *be, BpfhvBackendQueue *txq, uint64_t opaque_idx)
+{
+    struct bpfhv_tx_context *ctx = txq->ctx.tx;
+    struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
+    uint16_t used_idx = vq->h.next_used_idx;
+    uint16_t idx = (uint16_t)opaque_idx;
+
+    /* we can only release an unreleased buf (bug) */
+    if(unlikely(vq->g.pending_inuse_counter == 0))
+        return;
+
+    /* avoid ring write and write-write mfence if not needed */
+    if (idx == used_idx) {
+        vq->desc[used_idx] = vq->desc[idx];
+        __atomic_thread_fence(__ATOMIC_RELEASE);
+    }
+    vq->desc[used_idx].flags = vq->h.avail_used_flags;
+
+    /* update pending counter and advance hv used index */
+    vq->g.pending_inuse_counter--;
+    vring_packed_advance_used(vq);
+
+    /* delay notification, keep how many buffers to notify */
+    vq->g.pending_used_counter++;
+}
+
+static size_t
+vring_packed_txq_notify(BpfhvBackend *be, BpfhvBackendQueue *txq)
+{
+    struct bpfhv_tx_context *ctx = txq->ctx.tx;
+    struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
+    uint32_t count = vq->g.pending_used_counter;
+    if(count > 0)
+    {
+        /* Flush previous writes to the descriptor flags, and
+         * then check if the peer needs to be notified. */
+        __atomic_thread_fence(__ATOMIC_SEQ_CST);
+        txq->notify = vring_packed_intr_needed(vq, count);
+        txq->stats.pkts += count;
+        txq->stats.batches++;
+
+        vq->g.pending_used_counter = 0;
+    }
+    return count;
+}
+
 BeOps vring_packed_ops = {
     .rx_check_alignment = vring_packed_rx_check_alignment,
     .tx_check_alignment = vring_packed_tx_check_alignment,
@@ -453,6 +594,9 @@ BeOps vring_packed_ops = {
     .txq_kicks = vring_packed_txq_notification,
     .rxq_push = vring_packed_rxq_push,
     .txq_drain = vring_packed_txq_drain,
+    .txq_acquire = vring_packed_txq_acquire,
+    .txq_release = vring_packed_txq_release,
+    .txq_notify = vring_packed_txq_notify,
     .rxq_dump = vring_packed_rxq_dump,
     .txq_dump = vring_packed_txq_dump,
     .features_avail = 0,

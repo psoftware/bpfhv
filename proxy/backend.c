@@ -24,6 +24,7 @@
 #include <libnetmap.h>
 #endif
 #include <linux/if.h>
+#include "../sched16/pspat.h"
 
 #include "backend.h"
 
@@ -276,17 +277,17 @@ netmap_send(BpfhvBackend *be, const struct iovec *iov, size_t iovcnt)
     return totlen;
 }
 
-static void
-netmap_sync(BpfhvBackend *be)
-{
-    /* Optimization: use poll() with 0 timeout to perform the equivalent
-     * of ioctl(NIOCTXSYNC) + ioctl(NIOCRXSYNC) with a single system call. */
-    struct pollfd pfd = {
-        .fd = be->befd,
-        .events = POLLIN | POLLOUT,
-    };
-    poll(&pfd, 1, /*timeout_ms=*/0);
-}
+//static void
+//netmap_sync(BpfhvBackend *be)
+//{
+//    /* Optimization: use poll() with 0 timeout to perform the equivalent
+//     * of ioctl(NIOCTXSYNC) + ioctl(NIOCRXSYNC) with a single system call. */
+//    struct pollfd pfd = {
+//        .fd = be->befd,
+//        .events = POLLIN | POLLOUT,
+//    };
+//    poll(&pfd, 1, /*timeout_ms=*/0);
+//}
 #endif
 
 static void
@@ -443,7 +444,7 @@ process_packets_spin(BpfhvBackend *be)
         ops.txq_kicks(be->q[i].ctx.tx, /*enable=*/0);
     }
 
-    while (ACCESS_ONCE(be->stopflag) == 0) {
+    while (ACCESS_ONCE(be->stopflag) == BPFHV_STOPFD_NOEVENT) {
         if (be->sync) {
             be->sync(be);
         }
@@ -491,16 +492,169 @@ process_packets_spin(BpfhvBackend *be)
     }
 }
 
+static void
+process_packets_spin_many(BpfhvBackendBatch *bc)
+{
+    struct BpfhvBackendProcess *bp = bc->parent_bp;
+    int very_verbose = (verbose >= 2);
+    int sleep_usecs = bp->sleep_usecs;
+    struct sched_all *f = bp->sched_f;
+    unsigned int i;
+
+    /* Disable all guest-->host notifications. */
+    for(size_t j = 0; j < bc->used_instances; ++j) {
+        BpfhvBackend *be = &(bc->instance[j]);
+        BeOps ops = be->ops;
+        for (i = RXI_BEGIN(be); i < RXI_END(be); i++) {
+            ops.rxq_kicks(be->q[i].ctx.rx, /*enable=*/0);
+        }
+        for (i = TXI_BEGIN(be); i < TXI_END(be); i++) {
+            ops.txq_kicks(be->q[i].ctx.tx, /*enable=*/0);
+        }
+
+        /* multi queues are not implemented at this time */
+        assert(be->num_queue_pairs == 1);
+    }
+
+
+    while (ACCESS_ONCE(bc->stopflag) == BPFHV_STOPFD_NOEVENT) {
+        /* TODO: TX sync is made by scheduler functions, but not for RX */
+        // if (bp->sync) {
+        //     bp->sync(bp);
+        // }
+
+        /* do all RX first */
+        /* TODO: we should reimplement this */
+        // for(size_t j = 0; j < bc->used_instances; ++j) {
+        //     BpfhvBackend *be = &(bc->instance[j]);
+        //     BeOps ops = be->ops;
+
+        //     /* Read packets from the backend interface (e.g. TAP, netmap)
+        //      * into the first receive queue. */
+        //     {
+        //         BpfhvBackendQueue *rxq = be->q + 0;
+        //         size_t count;
+
+        //         count = ops.rxq_push(be, rxq, /*can_receive=*/NULL);
+        //         if (rxq->notify) {
+        //             rxq->stats.irqs++;
+        //             eventfd_signal(rxq->irqfd);
+        //             if (unlikely(very_verbose)) {
+        //                 printf("Interrupt on %s\n", rxq->name);
+        //             }
+        //         }
+        //         if (unlikely(very_verbose && count > 0)) {
+        //             ops.rxq_dump(rxq->ctx.rx);
+        //         }
+        //     }
+        // }
+
+        /* scheduler requires to know when routine starts */
+        uint64_t now = rdtsc();
+
+        /* do TX after, using scheduling */
+        for(size_t j = 0; j < bc->used_instances; ++j) {
+            BpfhvBackend *be = &(bc->instance[j]);
+            BeOps ops = be->ops;
+
+            /* Drain the packets from the transmit queues, sending them
+             * to the backend interface. */
+            for (i = TXI_BEGIN(be); i < TXI_END(be); i++) {
+                BpfhvBackendQueue *txq = be->q + i;
+                size_t count;
+
+                /* acquire bufs and sends them to scheduler (already done by this txq_acquire) */
+                count = ops.txq_acquire(be, txq, /*can_send=*/NULL);
+
+                if (unlikely(very_verbose && count > 0)) {
+                    printf("1) acquired %lu packets\n", count);
+                    ops.txq_dump(txq->ctx.tx);
+                }
+            }
+        }
+
+        /* dequeue packets from scheduler */
+        uint32_t ndeq = sched_dequeue(f, now);
+        if (unlikely(very_verbose && ndeq > 0))
+            printf("2) dequeued %u packets\n", ndeq);
+
+
+        /* scheduler decouples acquire and release of packets, and packets
+         * are only released after dequeuing. this mean that we should
+         * check for notifications after dequeue */
+        if(ndeq > 0) {
+            for(size_t j = 0; j < bc->used_instances; ++j) {
+                BpfhvBackend *be = &(bc->instance[j]);
+                BeOps ops = be->ops;
+
+                /* Drain the packets from the transmit queues, sending them
+                 * to the backend interface. */
+                for (i = TXI_BEGIN(be); i < TXI_END(be); i++) {
+                    BpfhvBackendQueue *txq = be->q + i;
+
+                    /* notify, if needed, released bufs to guests */
+                    uint32_t num_notified = be->ops.txq_notify(be, &be->q[i]);
+
+                    /* use irqfd to notify clients if requested by ops.txq_notify */
+                    if (txq->notify) {
+                        txq->stats.irqs++;
+                        eventfd_signal(txq->irqfd);
+                        if (unlikely(very_verbose)) {
+                            printf("Interrupt on %s\n", txq->name);
+                        }
+                    }
+                    if (unlikely(very_verbose && num_notified > 0)) {
+                        printf("2) notified %u packets\n", num_notified);
+                        ops.txq_dump(txq->ctx.tx);
+                    }
+                }
+            }
+        }
+
+        /* TODO: is this useful if we are doing also RX on this thread? */
+        /* sleep to match f->sched_interval_tsc */
+        sched_idle_sleep(f, now, ndeq);
+
+        /* TODO: is this useful with multiple guests per thread? */
+        if (sleep_usecs > 0) {
+            usleep(sleep_usecs);
+        }
+    }
+}
+
 static void *
 process_packets(void *opaque)
 {
     BpfhvBackend *be = opaque;
+    BpfhvBackendBatch *bc = opaque;
 
     if (verbose) {
         printf("Thread started\n");
     }
 
-    if (bp.busy_wait) {
+    if (bp.scheduler_mode) {
+        struct sched_all *f = bc->parent_bp->sched_f;
+
+        /* for now we have only one thread (batch) to fetch all the data */
+        assert(BPFHV_K_THREADS == 1);
+
+        /* compute total mbufs as sum of client queues */
+        uint32_t num_mbufs = 0;
+        for(size_t j = 0; j < bc->used_instances; ++j) {
+            BpfhvBackend *be = &(bc->instance[j]);
+            for (size_t i = TXI_BEGIN(be); i < TXI_END(be); i++) {
+                BpfhvBackendQueue *txq = be->q + i;
+                printf("num_bufs = %u\n", txq->ctx.tx->num_bufs);
+                num_mbufs += be->num_tx_bufs;
+            }
+        }
+
+        sched_all_start(f, num_mbufs);
+        /* start packet processing */
+        process_packets_spin_many(bc);
+        /* finalize scheduler after finishing */
+        sched_all_finish(f);
+    } else if (bp.busy_wait) {
         process_packets_spin(be);
     } else {
         process_packets_poll(be);
@@ -576,7 +730,7 @@ backend_stop(BpfhvBackend *be)
     int ret;
 
     eventfd_signal(be->stopfd);
-    ACCESS_ONCE(be->stopflag) = 1;
+    ACCESS_ONCE(be->stopflag) = BPFHV_STOPFD_HALT;
     __atomic_thread_fence(__ATOMIC_RELEASE);
     ret = pthread_join(be->th, NULL);
     if (ret) {
@@ -666,6 +820,9 @@ sigint_handler(int signum)
     unlink(BPFHV_SERVER_PATH);
     exit(EXIT_SUCCESS);
 }
+
+int activate_backend(BpfhvBackend *be);
+int deactivate_backend(BpfhvBackend *be);
 
 /* process requests coming from one hypervisor */
 static int
@@ -1129,16 +1286,28 @@ process_guest_message(BpfhvBackend *be)
         be->stopflag = 0;
         __atomic_thread_fence(__ATOMIC_RELEASE);
 
-        ret = pthread_create(&be->th, NULL, process_packets, be);
+        /* Interact with batch thread to activate new backend */
+        ret = activate_backend(be);
         if (ret) {
-            fprintf(stderr, "pthread_create() failed: %s\n",
-                    strerror(ret));
+            fprintf(stderr, "activate_backend() failed\n");
             break;
         }
+
         be->running = 1;
         if (verbose) {
-            printf("Backend starts processing\n");
+            printf("Backend correcly activated\n");
         }
+
+        // ret = pthread_create(&be->th, NULL, process_packets, be);
+        // if (ret) {
+        //     fprintf(stderr, "pthread_create() failed: %s\n",
+        //             strerror(ret));
+        //     break;
+        // }
+        // be->running = 1;
+        // if (verbose) {
+        //     printf("Backend starts processing\n");
+        // }
         break;
     }
 
@@ -1337,13 +1506,60 @@ BpfhvBackend* assign_backend() {
     BpfhvBackend *be = NULL;
     for(size_t i = 0; i < BPFHV_K_THREADS; ++i) {
         BpfhvBackendBatch *bc = &(bp.thread_batch[i]);
-        if(bc->used_instances < BPFHV_MAX_THREAD_INSTANCES) {
-            be = &(bc->instance[bc->used_instances]);
-            bc->used_instances++;
+        if(bc->allocated_instances < BPFHV_MAX_THREAD_INSTANCES) {
+            be = &(bc->instance[bc->allocated_instances]);
+            be->parent_bp = &bp;
+            be->parent_bc = bc;
+            bc->allocated_instances++;
         }
     }
 
     return be;
+}
+
+/* TODO: for now we activate the scheduler thread only when we have 
+ * at least a number of clients. This should be dynamic */
+#define BPFHV_MIN_REQUIRED_CLIENTS 1
+int activate_backend(BpfhvBackend *be) {
+    BpfhvBackendBatch *parent_bc = be->parent_bc;
+    if(parent_bc == NULL || be->running == 1)
+        return -1;
+
+    if(parent_bc->used_instances >= BPFHV_MIN_REQUIRED_CLIENTS)
+        return -1;
+
+    parent_bc->used_instances++;
+    if(parent_bc->used_instances == BPFHV_MIN_REQUIRED_CLIENTS) {
+        int ret = pthread_create(&parent_bc->th, NULL, process_packets, parent_bc);
+        if (ret) {
+            fprintf(stderr, "pthread_join() failed: %s\n",
+                    strerror(ret));
+            return ret;
+        }
+
+        if(verbose) {
+            fprintf(stdout, "Scheduler thread started\n");
+        }
+    }
+
+    return 0;
+}
+
+int deactivate_backend(BpfhvBackend *be) {
+    int ret;
+
+    eventfd_signal(be->stopfd);
+    ACCESS_ONCE(be->stopflag) = BPFHV_STOPFD_HALT;
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    ret = pthread_join(be->th, NULL);
+    if (ret) {
+        fprintf(stderr, "pthread_join() failed: %s\n",
+                strerror(ret));
+        return ret;
+    }
+    be->running = 0;
+
+    return 0;
 }
 
 int
@@ -1352,6 +1568,9 @@ setup_backend(BpfhvBackend *be, const char *ifimpl,
 
     /* TODO: change be->backend to int to avoid strdup */
     switch(iftype) {
+        case BPFHVCTL_DEV_TYPE_NONE:
+            be->backend = NULL;
+            break;
         case BPFHVCTL_DEV_TYPE_TAP:
             be->backend = strdup("tap");
             break;
@@ -1411,7 +1630,11 @@ setup_backend(BpfhvBackend *be, const char *ifimpl,
     be->vnet_hdr_len = (opt_offload) ?
         sizeof(struct virtio_net_hdr_v1) : 0;
     be->sync = NULL;
-    if (!strcmp(be->backend, "tap")) {
+    if(be->backend == NULL) {
+        be->recv = NULL;
+        be->send = NULL;
+        be->befd = -1;
+    } else if (!strcmp(be->backend, "tap")) {
         /* Open a TAP device to use as network backend. */
         char mod_ifname[IFNAMSIZ];
         strcpy(mod_ifname, ifname);
@@ -1461,9 +1684,9 @@ setup_backend(BpfhvBackend *be, const char *ifimpl,
         be->befd = be->nm.port->fd;
         be->recv = netmap_recv;
         be->send = netmap_send;
-        if (be->busy_wait) {
-            be->sync = netmap_sync;
-        }
+        // if (be->busy_wait) {
+        //     be->sync = netmap_sync;
+        // }
 
         if (be->vnet_hdr_len > 0) {
             struct nmreq_port_hdr req;
@@ -1628,7 +1851,11 @@ int main_server_select() {
 
                     /* init backend */
                     be->cfd = new_sd;
-                    int ret = setup_backend(be, "sring", "", BPFHVCTL_DEV_TYPE_TAP, 0);
+                    int ret;
+                    if(bp.scheduler_mode)
+                        ret = setup_backend(be, "vring_packed", "", BPFHVCTL_DEV_TYPE_NONE, 0);
+                    else
+                        ret = setup_backend(be, "sring", "", BPFHVCTL_DEV_TYPE_TAP, 0);
                     if (ret < 0) {
                         fprintf(stderr, "error when setting up backend!\n");
                         // dealloc_backend(be); /*TODO*/
@@ -1684,7 +1911,7 @@ main(int argc, char **argv)
     bp.busy_wait = 0;
     bp.collect_stats = 0;
 
-    while ((opt = getopt(argc, argv, "hp:P:i:CGBvb:Su:d:O:")) != -1) {
+    while ((opt = getopt(argc, argv, "hp:P:i:CGBvb:Su:d:O:w:")) != -1) {
         switch (opt) {
         case 'h':
             usage(argv[0]);
@@ -1702,6 +1929,10 @@ main(int argc, char **argv)
             bp.busy_wait = 1;
             break;
 
+        case 'w':
+            bp.scheduler_mode = 1;
+            break;
+
         case 'S':
             bp.collect_stats = 1;
             break;
@@ -1715,13 +1946,36 @@ main(int argc, char **argv)
             break;
 
         default:
-            usage(argv[0]);
-            return -1;
+            /* hack to pass arguments to sched_all_create */
+            if(bp.scheduler_mode != 1) {
+                usage(argv[0]);
+                return -1;
+            }
             break;
         }
     }
 
     assert(sizeof(struct virtio_net_hdr_v1) == 12);
+
+    for(size_t i = 0; i < BPFHV_K_THREADS; ++i) {
+        BpfhvBackendBatch *bc = &(bp.thread_batch[i]);
+        bc->used_instances = 0;
+        bc->allocated_instances = 0;
+        bc->th_running = 0;
+        bc->parent_bp = &bp;
+        bc->stopflag = BPFHV_STOPFD_NOEVENT;
+    }
+
+
+    if (optind > 0) {
+        argc -= optind - 1;
+        argv += optind - 1;
+    }
+
+    if(bp.scheduler_mode == 1) {
+        bp.sched_f = sched_all_create(argc, argv);
+        bp.sched_enqueue = fun_sched_enqueue;
+    }
 
     if (bp.pidfile != NULL) {
         FILE *f = fopen(bp.pidfile, "w");

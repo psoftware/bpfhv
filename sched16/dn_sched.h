@@ -203,10 +203,10 @@ dn_dequeue(struct dn_queue *q)
 #if 1 // XXX this is racy ndef MY_MQ_LEN
 	/* Update stats for the queue */
 	q->ni.length--;
-	q->ni.len_bytes -= m->m_pkthdr.len;
+	q->ni.len_bytes -= m->iov.iov_len;
 	if (q->_si) {
 		q->_si->ni.length--;
-		q->_si->ni.len_bytes -= m->m_pkthdr.len;
+		q->_si->ni.len_bytes -= m->iov.iov_len;
 	}
 	if (q->ni.length == 0) /* queue is now idle */
 		q->q_time = dn_cfg.curr_time;

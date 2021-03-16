@@ -201,7 +201,7 @@ gnet_stats_deq(struct cfg_s *c, struct mbuf *mb)
 {
 	struct dn_sch_inst *si = c->si;
 	struct dn_queue *_q = FI2Q(c, mb->flow_id);
-	int len = mb->m_pkthdr.len;
+	int len = mb->iov.iov_len;
 
 	_q->ni.bytes += len;
 	si->ni.bytes += len;
@@ -797,7 +797,7 @@ sched_enq(void *opaque, struct mbuf *m)
     ret = c->enq(c->si, q, m);
     if (ret) {
 	c->drop++;
-	ND("------ DROP (%d) ----- m %zd len %u flow %u", c->drop, m - m->q->queue, m->m_pkthdr.len, m->flow_id);
+	ND("------ DROP (%d) ----- m %zd len %u flow %u", c->drop, m - m->q->queue, m->iov.iov_len, m->flow_id);
 	return ret;
     }
     c->pending++;

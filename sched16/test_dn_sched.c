@@ -77,7 +77,7 @@ dn_enqueue(struct dn_queue *q, struct mbuf* m, int drop)
 	if (mq_append(&q->mq, m))
 		goto drop;
         q->ni.length++;
-        q->ni.tot_bytes += m->m_pkthdr.len;
+        q->ni.tot_bytes += m->iov.iov_len;
         q->ni.tot_pkts++;
         return 0;
 

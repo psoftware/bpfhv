@@ -33,10 +33,33 @@ PROGS = proxy/backend proxy/sring_progs.o proxy/sring_gso_progs.o proxy/vring_pa
 proxy: $(PROGS)
 
 BESRCS=proxy/backend.c proxy/sring.c proxy/sring_gso.c proxy/vring_packed.c
-BEHDRS=include/bpfhv-proxy.h include/bpfhv.h proxy/sring.h proxy/sring_gso.h proxy/vring_packed.h proxy/backend.h
+BEHDRS=include/bpfhv-proxy.h include/bpfhv.h proxy/sring.h proxy/sring_gso.h proxy/vring_packed.h proxy/backend.h sched16/pspat.h
+BEOBJS=$(BESRCS:%.c=%.o)
 
-proxy/backend: $(BESRCS) $(BEHDRS)
-	$(CC) -O2 -g -Wall -Werror -Wno-address-of-packed-member -I @SRCDIR@/include $(DEFS) -o $@ $(BESRCS) $(LIBS)
+# scheduler related sources
+SCHHDRS= sched16/sched16.h sched16/dn_test.h sched16/cqueue.h proxy/backend.h
+SCHSRCS= sched16/dn_sched_fifo.c sched16/dn_sched_rr.c sched16/dn_sched_qfq.c sched16/dn_sched_wf2q.c
+SCHSRCS+=sched16/dn_heap.c sched16/test_dn_sched.c sched16/sched_main.c sched16/dn_cfg.c
+SCHSRCS+=sched16/sess.c sched16/dn_cfg.c sched16/tsc.c sched16/pspat.c
+SCHOBJS=$(SCHSRCS:%.c=%.o)
+SCHCFLAGS = -O3 -pipe -g
+SCHCFLAGS += -Werror -Wall -Wunused-function -Wunused-result
+SCHCFLAGS += -Wextra -I. -Iinclude
+
+ifeq ($(shell uname),Linux)
+        LIBS += -lrt  # on linux
+endif
+
+all: $(PROGS)
+
+sched16/%.o: sched16/%.c $(SCHHDRS)
+	$(CC) $(SCHCFLAGS) -I @SRCDIR@/sched16 -c $< -o $@
+
+proxy/%.o: proxy/%.c $(BEHDRS)
+	$(CC) -O2 -g -Wall -Werror -Wno-address-of-packed-member -I @SRCDIR@/include $(DEFS) -I @SRCDIR@/sched16 -c $< -o $@
+
+proxy/backend: $(BEOBJS) $(SCHOBJS)
+	$(CC) -o $@ $(BEOBJS) $(SCHOBJS) $(LIBS)
 
 proxy/sring_progs.o: proxy/sring_progs.c proxy/sring.h include/bpfhv.h
 	clang -O2 -Wall -I @SRCDIR@/include -target bpf -c $< -o $@
@@ -48,7 +71,7 @@ proxy/vring_packed_progs.o: proxy/vring_packed_progs.c proxy/vring_packed.h incl
 	clang -O2 -Wall -I @SRCDIR@/include -target bpf -c $< -o $@
 
 proxy_clean:
-	-rm -rf $(PROGS)
+	-rm -rf $(PROGS) $(BEOBJS) $(SCHOBJS)
 else
 proxy:
 proxy_clean:

@@ -12,8 +12,12 @@
 #define _GNU_SOURCE	/* pthread_setaffinity_np */
 
 /* XXX where ? */
+#ifndef likely
 #define likely(x)       __builtin_expect((x),1)
+#endif
+#ifndef unlikely
 #define unlikely(x)     __builtin_expect((x),0)
+#endif
 
 #include <stdint.h>
 #include <errno.h> // errno ?
@@ -112,13 +116,14 @@ pthread_setaffinity_np(pthread_t thread, size_t cpusetsize,
 	 p;} )
 
 
+#include <sys/uio.h>
+#include "../proxy/backend.h"
 struct mbuf {
-        struct {
-                uint64_t ptr;
-                int len;
-        } m_pkthdr;
+    struct iovec iov;
+    struct BpfhvBackend *be;
+    struct BpfhvBackendQueue *txq;
+    uint64_t idx;
 	uint16_t flow_id;	/* for testing, index of a flow */
-	uint16_t npkts;
 #ifndef MY_MQ_LEN
         struct mbuf *m_nextpkt;
 #endif
@@ -208,7 +213,7 @@ struct sched_td { /* per thread info */
     uint8_t packet[1500]; /* packet to be sent */
 
 #define NMMSG       64
-    struct mmsghdr mmsg[NMMSG];
+    //struct mmsghdr mmsg[NMMSG];
     struct iovec onemsg;
 
     char name[128]; /* debugging */
@@ -217,7 +222,7 @@ struct sched_td { /* per thread info */
 struct sched_args;
 
 struct sched_all {
-    uint32_t n_threads;
+    uint32_t n_clients;
     uint32_t n_active_threads;
 
     const char *dst_ip_addr; /* destination ip address */
@@ -244,21 +249,6 @@ struct sched_all {
     /* Scheduler output interface */
     struct nm_desc *nmd;
 
-    /* Syncronization modes between clients and scheduler:
-     *   [0] Scheduler does busy wait, and client is not allowed
-     *     to do the scheduler work.
-     *   [1] Scheduler limits busy wait and goes to sleep when no work
-     *     comes for a short while (e.g. 30 us). It will wake up
-     *     autonomously after some longer time (e.g. 500 ms), or
-     *     when receiving a notification from a client. While
-     *     the scheduler is sleeping clients are allowed to do
-     *     scheduling work. Clients notify the scheduler when they
-     *     realize there is too much work to do. */
-    unsigned int distributed_mode;
-
-    sem_t sch_lock;
-    int notifyfd;
-
     int multi_udp_ports;
 
     /* Structures used by do_sched(). */
@@ -280,6 +270,8 @@ struct sched_all {
     uint64_t stat_early;
     uint64_t n_sch_pub;
     uint64_t n_sch_fetch;
+    uint64_t n_sch_released;
+    uint64_t n_sch_released_bytes;
 };
 
 
@@ -315,7 +307,10 @@ double parse_gen(const char *arg, const struct _sm *conv, int *err);
 int do_socket(const char *addr, int port, int client, int nonblock);
 uint32_t safe_write(int fd, const char *buf, uint32_t l);
 
-#include "cqueue.h"
+struct cqueue_sched {
+    uint64_t sch_extract_next; /* tsc value for next extract retry */
+};
+
 #include "tsc.h"
 
 // int safe_read(int fd, const char *buf, int l);

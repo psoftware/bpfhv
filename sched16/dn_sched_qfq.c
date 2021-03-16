@@ -530,7 +530,7 @@ qfq_update_class(struct qfq_sched *q, struct qfq_group *grp,
 		unsigned int len;
 		uint64_t roundedS;
 
-		len = cl->_q.mq.head->m_pkthdr.len;
+		len = cl->_q.mq.head->iov.iov_len;
 		cl->F = cl->S + (uint64_t)len * cl->inv_w;
 		roundedS = qfq_round_down(cl->S, grp->slot_shift);
 		if (roundedS == grp->S)
@@ -570,7 +570,7 @@ qfq_dequeue(struct dn_sch_inst *si)
 	}
 	NO(q->queued--;)
 	old_V = q->V;
-	q->V += (uint64_t)m->m_pkthdr.len * q->iwsum;
+	q->V += (uint64_t)m->iov.iov_len * q->iwsum;
 	ND("m is %p F 0x%llx V now 0x%llx", m, cl->F, q->V);
 
 	if (qfq_update_class(q, grp, cl)) {
@@ -657,7 +657,7 @@ qfq_enqueue(struct dn_sch_inst *si, struct dn_queue *_q, struct mbuf *m)
 	int s;
 
 	NO(q->loops++;)
-	DX(4, "len %d flow %p inv_w 0x%x grp %d", m->m_pkthdr.len,
+	DX(4, "len %lu flow %p inv_w 0x%x grp %d", m->iov.iov_len,
 		_q, cl->inv_w, cl->grp->index);
 	/* XXX verify that the packet obeys the parameters */
 	if (m != _q->mq.head) {
@@ -671,7 +671,7 @@ qfq_enqueue(struct dn_sch_inst *si, struct dn_queue *_q, struct mbuf *m)
 	grp = cl->grp;
 	qfq_update_start(q, cl); /* adjust start time */
 	/* compute new finish time and rounded start. */
-	cl->F = cl->S + (uint64_t)(m->m_pkthdr.len) * cl->inv_w;
+	cl->F = cl->S + (uint64_t)(m->iov.iov_len) * cl->inv_w;
 	roundedS = qfq_round_down(cl->S, grp->slot_shift);
 
 	/*
