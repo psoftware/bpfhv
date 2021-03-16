@@ -1504,32 +1504,33 @@ usage(const char *progname)
 
 BpfhvBackend* assign_backend() {
     BpfhvBackend *be = NULL;
-    for(size_t i = 0; i < BPFHV_K_THREADS; ++i) {
-        BpfhvBackendBatch *bc = &(bp.thread_batch[i]);
-        if(bc->allocated_instances < BPFHV_MAX_THREAD_INSTANCES) {
+    /* TODO: we are considering only scheduler case here,
+     * so only a single batch */
+    //for(size_t i = 0; i < BPFHV_K_THREADS; ++i) {
+        BpfhvBackendBatch *bc = &(bp.thread_batch[0 /*i*/]);
+        if(bc->allocated_instances < bp.client_threshold_activation/*BPFHV_MAX_THREAD_INSTANCES*/) {
             be = &(bc->instance[bc->allocated_instances]);
             be->parent_bp = &bp;
             be->parent_bc = bc;
             bc->allocated_instances++;
         }
-    }
+    //}
 
     return be;
 }
 
 /* TODO: for now we activate the scheduler thread only when we have 
  * at least a number of clients. This should be dynamic */
-#define BPFHV_MIN_REQUIRED_CLIENTS 1
 int activate_backend(BpfhvBackend *be) {
     BpfhvBackendBatch *parent_bc = be->parent_bc;
     if(parent_bc == NULL || be->running == 1)
         return -1;
 
-    if(parent_bc->used_instances >= BPFHV_MIN_REQUIRED_CLIENTS)
+    if(parent_bc->used_instances >= bp.client_threshold_activation)
         return -1;
 
     parent_bc->used_instances++;
-    if(parent_bc->used_instances == BPFHV_MIN_REQUIRED_CLIENTS) {
+    if(parent_bc->used_instances == bp.client_threshold_activation) {
         int ret = pthread_create(&parent_bc->th, NULL, process_packets, parent_bc);
         if (ret) {
             fprintf(stderr, "pthread_join() failed: %s\n",
@@ -1846,6 +1847,7 @@ int main_server_select() {
                     BpfhvBackend *be = assign_backend();
                     if (be == NULL) {
                         fprintf(stderr, "max backend number reached!\n");
+                        close(new_sd);
                         continue;
                     }
 
@@ -1931,6 +1933,11 @@ main(int argc, char **argv)
 
         case 'w':
             bp.scheduler_mode = 1;
+            bp.client_threshold_activation = atoi(optarg);
+            if(bp.client_threshold_activation <= 0) {
+                fprintf(stderr, "scheduler activation threshold must be > 0.\n");
+                return -1;
+            }
             break;
 
         case 'S':

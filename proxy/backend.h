@@ -260,6 +260,10 @@ typedef struct BpfhvBackendProcess {
 
     /* Send and receive to scheduler */
     SchedEnqueueFun sched_enqueue;
+
+    /* Scheduler waits for a predefined number of clients
+     * before starting, and doesn't accept more of them */
+    int client_threshold_activation;
     /*********************************/
 
     /* batches per thread */
