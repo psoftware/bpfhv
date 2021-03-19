@@ -53,8 +53,7 @@ netmap_init_realsched(const char *ifname)
     return nmd;
 }
 
-uint32_t netmap_ring_free_space(struct nm_desc *nmd) {
-    struct netmap_ring *ring = NETMAP_TXRING(nmd->nifp, 0);
+uint32_t netmap_ring_free_space(struct nm_desc *nmd, struct netmap_ring *ring) {
     int space, reclaim = 1;
 again:
     space = nm_ring_space(ring);
@@ -133,7 +132,7 @@ sched_dequeue(struct sched_all *f, uint64_t now) {
 
     /* precompute available netmap ring space to avoid
      * dropping descheduled packets */
-    space = netmap_ring_free_space(nmd);
+    space = netmap_ring_free_space(nmd, ring);
 
     for (j = 0; j < space; j++) {
         /* packet rate limiter + batch limit */
@@ -147,9 +146,6 @@ sched_dequeue(struct sched_all *f, uint64_t now) {
         f->next_link_idle += pkt_tsc(f, m->iov.iov_len);
         ndeq++;
 
-        /* mark packet to client as dequeued (release it)
-         * we do it here to keep max mbufs equal to sum of cqueue sizes */
-        m->be->ops.txq_release(m->be, m->txq, m->idx);
         f->n_sch_released_bytes += m->iov.iov_len;
 
         /* copy to netmap ring */
@@ -162,17 +158,18 @@ sched_dequeue(struct sched_all *f, uint64_t now) {
 
         head = nm_ring_next(ring, head);
 
+        /* mark packet to client as dequeued (release it)
+         * we do it here to keep max mbufs equal to sum of cqueue sizes */
+        m->be->ops.txq_release(m->be, m->txq, m->idx);
+
         /* free nbuf */
         mbuf_cache_put(&f->mbc, m);
     }
 
-    if (j) {
+    if (ndeq > 0) {
         ring->head = ring->cur = head;
         ioctl(nmd->fd, NIOCTXSYNC, NULL);
         //cq->n_cli_io++;
-    }
-
-    if (ndeq > 0) {
         /* update stats */
         f->n_sch_released += ndeq;
     }
