@@ -788,9 +788,7 @@ int
 sched_enq(void *opaque, struct mbuf *m)
 {
     struct cfg_s *c = opaque;
-    		static uint32_t cancellami = 0;
-          	struct dn_queue *q = FI2Q(c, cancellami++ & 0x3);
-    //struct dn_queue *q = FI2Q(c, m->flow_id);
+    struct dn_queue *q = FI2Q(c, m->flow_id);
     int ret;
 
     c->_enqueue++;
