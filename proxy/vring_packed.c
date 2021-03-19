@@ -501,9 +501,16 @@ vring_packed_txq_acquire(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send
             /* Although iov can be easily obtained from descriptor at avail_idx,
              * we don't do that to avoid further cacheline bouncing made by the
              * scheduler thread. iov is passed by value. */
-            /* int ret = */
-            be->parent_bp->sched_enqueue(be->parent_bp, be, txq,
+            int ret = be->parent_bp->sched_enqueue(be->parent_bp, be, txq,
                                          iov, (uint64_t)avail_idx, /*TODO: implement mark*/0);
+
+            /* release dropped packet (scheduler will not do it for us) */
+            if (unlikely(ret < 0)) {
+                if (unlikely(verbose))
+                    fprintf(stderr, "Dropped packet on sched_enqueue!\n");
+                vring_packed_ops.txq_release(be, txq, (uint64_t)avail_idx);
+                /* (optimiz.) we should notify but scheduler will do it for us later */
+            }
 
             /* TODO: we actually don't care about dropping not enqueued packets.
              * also, can_send does not have any meaning when enqueuing to scheduler */
