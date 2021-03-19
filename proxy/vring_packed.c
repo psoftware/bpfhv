@@ -556,7 +556,7 @@ vring_packed_txq_release(BpfhvBackend *be, BpfhvBackendQueue *txq, uint64_t opaq
         return;
 
     /* avoid ring write and write-write mfence if not needed */
-    if (idx == used_idx) {
+    if (idx != used_idx) {
         vq->desc[used_idx] = vq->desc[idx];
         __atomic_thread_fence(__ATOMIC_RELEASE);
     }
