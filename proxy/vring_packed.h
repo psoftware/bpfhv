@@ -82,6 +82,11 @@ struct vring_packed_desc_state {
     uint16_t last;
 };
 
+struct vring_packed_desc_hv_map {
+    /* HV associated idx for out-of-order consumption */
+    uint64_t slot_idx;
+};
+
 union vring_packed_desc_event {
     struct {
         /* Descriptor Ring Change Event Offset/Wrap Counter. */
@@ -121,6 +126,7 @@ struct vring_packed_virtq {
     MY_CACHELINE_ALIGNED
     uint64_t state_ofs;
     uint32_t num_desc;
+    uint64_t hv_map_ofs;
 
     /* Notification suppression information. Shared, owned by the guest. */
     MY_CACHELINE_ALIGNED
@@ -153,6 +159,12 @@ struct vring_packed_desc_state *
 vring_packed_state(const struct vring_packed_virtq *vq)
 {
     return (struct vring_packed_desc_state *)(((char *)vq) + vq->state_ofs);
+}
+
+struct vring_packed_desc_hv_map *
+vring_packed_hv_map(const struct vring_packed_virtq *vq)
+{
+    return (struct vring_packed_desc_hv_map *)(((char *)vq) + vq->hv_map_ofs);
 }
 
 #endif  /* __BPFHV_VRING_PACKED_H__ */

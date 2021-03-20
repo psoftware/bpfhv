@@ -38,8 +38,12 @@ vring_packed_priv_size(size_t num_bufs)
     size_t state_size = ROUNDUP(
                     sizeof(struct vring_packed_desc_state) * num_bufs,
                     MY_CACHELINE_SIZE);
+    size_t hv_map_size = ROUNDUP(
+                    sizeof(struct vring_packed_desc_hv_map) * num_bufs,
+                    MY_CACHELINE_SIZE);
 
-    return sizeof(struct vring_packed_virtq) + desc_size + state_size;
+    return sizeof(struct vring_packed_virtq) + desc_size
+                                        + state_size + hv_map_size;
 }
 
 static size_t
@@ -91,6 +95,8 @@ vring_packed_init(struct vring_packed_virtq *vq, size_t num)
 {
     size_t desc_size = ROUNDUP(sizeof(struct vring_packed_desc) * num,
                                MY_CACHELINE_SIZE);
+    size_t state_desc_size = ROUNDUP(sizeof(struct vring_packed_desc_state) * num,
+                               MY_CACHELINE_SIZE);
     struct vring_packed_desc_state *state;
     unsigned int i;
 
@@ -113,8 +119,9 @@ vring_packed_init(struct vring_packed_virtq *vq, size_t num)
                              1 << VRING_PACKED_DESC_F_USED;
 
 
-    vq->state_ofs = sizeof(struct vring_packed_virtq) + desc_size;
     vq->num_desc = num;
+    vq->state_ofs = sizeof(struct vring_packed_virtq) + desc_size;
+    vq->hv_map_ofs = vq->state_ofs + state_desc_size;
 
     vq->driver_event.flags = VRING_PACKED_EVENT_FLAG_DESC;
     vq->driver_event.off_wrap = 1 << VRING_PACKED_EVENT_F_WRAP_CTR;
@@ -485,24 +492,31 @@ vring_packed_txq_acquire(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send
         __atomic_thread_fence(__ATOMIC_ACQUIRE);
 
         /* Get the next avail descriptor and process it. */
-        iov.iov_base = translate_addr(be, vq->desc[avail_idx].addr,
-                                      vq->desc[avail_idx].len);
-        iov.iov_len = vq->desc[avail_idx].len;
+        struct vring_packed_desc *avail_desc = &vq->desc[avail_idx];
+        iov.iov_base = translate_addr(be, avail_desc->addr, avail_desc->len);
+        iov.iov_len = avail_desc->len;
         if (unlikely(iov.iov_base == NULL)) {
             /* Invalid descriptor, just skip it. */
             if (verbose) {
                 fprintf(stderr, "Invalid TX descriptor: gpa%"PRIx64", "
-                                "len %u\n", vq->desc[avail_idx].addr,
-                                vq->desc[avail_idx].len);
+                                "len %u\n", avail_desc->addr,
+                                avail_desc->len);
             }
         } else {
             // TODO: we could generalize this...
             // int ret = be->send(be, &iov, 1);
+
+            /* Save buffer id ring slot into hv_map. We can't pass slot ids to
+             * release buffers because slots can be swapped, so we have to map
+             * buffer ids to slot ids */
+            struct vring_packed_desc_hv_map *hvmap = vring_packed_hv_map(vq);
+            hvmap[avail_desc->id].slot_idx = avail_idx;
+
             /* Although iov can be easily obtained from descriptor at avail_idx,
              * we don't do that to avoid further cacheline bouncing made by the
              * scheduler thread. iov is passed by value. */
             int ret = be->parent_bp->sched_enqueue(be->parent_bp, be, txq,
-                                         iov, (uint64_t)avail_idx, /*TODO: implement mark*/0);
+                                         iov, avail_desc->id, /*TODO: implement mark*/0);
 
             /* release dropped packet (scheduler will not do it for us) */
             if (unlikely(ret < 0)) {
@@ -543,22 +557,65 @@ vring_packed_txq_acquire(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send
     return count;
 }
 
+/* optimized swap: only addr, len and id are swapped. flags remain the same (maybe complemented)
+ * for acquired unreleased descriptors, and mark can be skipped because it's useless after enqueuing */
+static inline void
+vring_packed_desc_swap_acquired(struct vring_packed_virtq *vq, uint16_t idx1, uint16_t idx2) {
+    struct vring_packed_desc temp;
+    struct vring_packed_desc *desc1 = &vq->desc[idx1];
+    struct vring_packed_desc *desc2 = &vq->desc[idx2];
+    temp.addr = desc1->addr;
+    temp.len = desc1->len;
+    temp.id = desc1->id;
+
+    desc1->addr = desc2->addr;
+    desc1->len = desc2->len;
+    desc1->id = desc2->id;
+
+    desc2->addr = temp.addr;
+    desc2->len = temp.len;
+    desc2->id = temp.id;
+
+    /* note on flags: flags field of slots at idx1 and idx2 are not generally equal:
+     * if used_idx wrapped and id2 < id1 then flags are complemented. However
+     * acquired but not released descriptors must be always not available and not
+     * used, hence swapping descriptors without copying flags will yield
+     * the same status (available, not used) */
+    uint64_t used_idx = idx1;
+    uint64_t _idx = idx2;
+    uint64_t mergeflags = 1 << VRING_PACKED_DESC_F_AVAIL | 1 << VRING_PACKED_DESC_F_USED;
+    assert( (used_idx == _idx) ||
+            (used_idx < _idx && desc1->flags == desc2->flags) ||
+            (used_idx > _idx && (desc1->flags ^ desc2->flags) == mergeflags));
+}
+
 static void
-vring_packed_txq_release(BpfhvBackend *be, BpfhvBackendQueue *txq, uint64_t opaque_idx)
+vring_packed_txq_release(BpfhvBackend *be, BpfhvBackendQueue *txq, uint64_t opaque_id)
 {
     struct bpfhv_tx_context *ctx = txq->ctx.tx;
     struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
     uint16_t used_idx = vq->h.next_used_idx;
-    uint16_t idx = (uint16_t)opaque_idx;
+    uint16_t id = (uint16_t)opaque_id, _idx;
 
     /* we can only release an unreleased buf (bug) */
     if(unlikely(vq->g.pending_inuse_counter == 0))
         return;
 
+    /* hv_map : bufferid -> slot_index */
+    struct vring_packed_desc_hv_map *hv_map = vring_packed_hv_map(vq);
+    _idx = hv_map[id].slot_idx;
+
     /* avoid ring write and write-write mfence if not needed */
-    if (idx != used_idx) {
-        vq->desc[used_idx] = vq->desc[idx];
+    if (_idx != used_idx) {
+        /* In this case descriptors at used_idx and _idx must be swapped.
+         * Also, slot index associated to used_idx buffer must be updated */
+        struct vring_packed_desc *used_desc = &vq->desc[used_idx];
+        hv_map[used_desc->id].slot_idx = _idx;
+
+        /* swap by copying descriptors content */
+        vring_packed_desc_swap_acquired(vq, used_idx, _idx);
         __atomic_thread_fence(__ATOMIC_RELEASE);
+        //fprintf(stderr, "ooo %lu\n", opaque_id);
     }
     vq->desc[used_idx].flags = vq->h.avail_used_flags;
 
