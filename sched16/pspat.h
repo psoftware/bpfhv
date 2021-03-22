@@ -12,6 +12,8 @@ uint32_t
 fun_sched_enqueue(struct BpfhvBackendProcess *bp, struct BpfhvBackend *be, BpfhvBackendQueue *txq,
                              struct iovec iov, uint64_t opaque_idx, uint32_t mark);
 
+int sched_dump(struct sched_all *f);
+
 void sched_idle_sleep(struct sched_all *f, uint64_t now, uint32_t ndeq);
 uint32_t sched_dequeue(struct sched_all *f, uint64_t now);
 

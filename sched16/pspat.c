@@ -270,6 +270,11 @@ fun_sched_enqueue(struct BpfhvBackendProcess *bp, struct BpfhvBackend *be, Bpfhv
 //     }
 // }
 
+int
+sched_dump(struct sched_all *f) {
+    return dump(f->sched);
+}
+
 void
 sched_idle_sleep(struct sched_all *f, uint64_t now, uint32_t ndeq) {
     /*

@@ -139,6 +139,8 @@ void *sched_init(int ac, char *av[]);
 int  sched_enq(void *, struct mbuf *);
 struct mbuf *sched_deq(void *);
 
+int dump(void *c);
+
 struct sched_all;
 
 /*

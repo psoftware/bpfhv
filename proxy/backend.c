@@ -727,7 +727,7 @@ backend_drain(BpfhvBackend *be)
 static int
 backend_stop(BpfhvBackend *be)
 {
-    int ret;
+    /*int ret;
 
     eventfd_signal(be->stopfd);
     ACCESS_ONCE(be->stopflag) = BPFHV_STOPFD_HALT;
@@ -738,7 +738,23 @@ backend_stop(BpfhvBackend *be)
                 strerror(ret));
         return ret;
     }
-    be->running = 0;
+    be->running = 0;*/
+
+    int ret;
+    BpfhvBackendBatch *bc = be->parent_bc;
+    if(!bc->th_running)
+        return -1;
+
+    //eventfd_signal(bc->stopfd);
+    ACCESS_ONCE(bc->stopflag) = BPFHV_STOPFD_HALT;
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    ret = pthread_join(bc->th, NULL);
+    if (ret) {
+        fprintf(stderr, "pthread_join() failed: %s\n",
+                strerror(ret));
+        return ret;
+    }
+    bc->th_running = 0;
 
     return 0;
 }
@@ -796,6 +812,9 @@ stats_show(BpfhvBackendProcess *bp)
     }
 
     bp->stats_ts = t;
+
+    if(bp->scheduler_mode && bp->thread_batch[0].th_running)
+        sched_dump(bp->sched_f);
 }
 
 static void
@@ -1537,6 +1556,7 @@ int activate_backend(BpfhvBackend *be) {
                     strerror(ret));
             return ret;
         }
+        parent_bc->th_running = 1;
 
         if(verbose) {
             fprintf(stdout, "Scheduler thread started\n");

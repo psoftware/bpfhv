@@ -269,16 +269,15 @@ do_dequeue:
 #endif
 
 int
-dump(struct cfg_s *c)
+dump(void *_c)
 {
+	struct cfg_s *c = _c;
 	int i;
 
 	for (i=0; i < c->flows; i++) {
-		//struct dn_queue *q = FI2Q(c, i);
-		ND(1, "queue %4d tot %10llu", i,
-		    (unsigned long long)q->ni.tot_bytes);
+		struct dn_queue *q = FI2Q(c, i);
+		printf("queue %4d tot %10llu\n", i, (unsigned long long)q->ni.tot_bytes);
 	}
-	DX(1, "done %d loops\n", c->loops);
 	return 0;
 }
 
