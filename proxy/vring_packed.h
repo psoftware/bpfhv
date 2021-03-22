@@ -67,6 +67,8 @@ struct vring_packed_desc {
     uint16_t id;
     /* The flags depending on descriptor type. */
     uint16_t flags;
+    /* Guest injected mark */
+    uint32_t mark;
 };
 
 struct vring_packed_desc_state {

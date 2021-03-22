@@ -16,7 +16,7 @@ static int BPFHV_FUNC(smp_mb_full);
 
 static inline void
 vring_packed_add(struct vring_packed_virtq *vq, struct bpfhv_buf *b,
-                 uint16_t flags)
+                 uint16_t flags, uint32_t mark)
 {
     struct vring_packed_desc_state *state = vring_packed_state(vq);
     uint16_t head_avail_idx;
@@ -32,6 +32,7 @@ vring_packed_add(struct vring_packed_virtq *vq, struct bpfhv_buf *b,
     vq->desc[avail_idx].addr = b->paddr;
     vq->desc[avail_idx].len = b->len;
     vq->desc[avail_idx].id = id;
+    vq->desc[avail_idx].mark = mark;
     state[state_idx].cookie = b->cookie;
 
     if (++avail_idx >= vq->num_desc) {
@@ -82,6 +83,11 @@ vring_packed_kick_needed(struct vring_packed_virtq *vq, uint16_t num_published)
     return vring_need_event(old_idx, event_idx, vq->g.next_avail_idx);
 }
 
+static inline uint32_t
+mark_packet(struct bpfhv_tx_context *ctx) {
+    return 0;
+}
+
 __section("txp")
 int vring_packed_txp(struct bpfhv_tx_context *ctx)
 {
@@ -92,7 +98,8 @@ int vring_packed_txp(struct bpfhv_tx_context *ctx)
         return -1;
     }
 
-    vring_packed_add(vq, txb, 0);
+    uint32_t mark = mark_packet(ctx);
+    vring_packed_add(vq, txb, 0, mark);
     smp_mb_full();
     ctx->oflags = vring_packed_kick_needed(vq, 1) ? BPFHV_OFLAGS_KICK_NEEDED : 0;
 
@@ -265,7 +272,7 @@ int vring_packed_rxp(struct bpfhv_rx_context *ctx)
     for (i = 0; i < ctx->num_bufs; i++) {
         struct bpfhv_buf *rxb = ctx->bufs + i;
 
-        vring_packed_add(vq, rxb, VRING_DESC_F_WRITE);
+        vring_packed_add(vq, rxb, VRING_DESC_F_WRITE, 0);
 
     }
     smp_mb_full();
