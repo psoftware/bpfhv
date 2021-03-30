@@ -1764,11 +1764,13 @@ setup_backend(BpfhvBackend *be, const char *ifimpl,
         return -1;
     }
 
-    ret = fcntl(be->befd, F_SETFL, O_NONBLOCK);
-    if (ret) {
-        fprintf(stderr, "fcntl(befd, F_SETFL) failed: %s\n",
-                strerror(errno));
-        return -1;
+    if(be->befd != -1) {
+        ret = fcntl(be->befd, F_SETFL, O_NONBLOCK);
+        if (ret) {
+            fprintf(stderr, "fcntl(befd, F_SETFL) failed: %s\n",
+                    strerror(errno));
+            return -1;
+        }
     }
 
     /*ret = main_loop(be);
@@ -1879,6 +1881,7 @@ int main_server_select() {
                     else
                         ret = setup_backend(be, "sring", "", BPFHVCTL_DEV_TYPE_TAP, 0);
                     if (ret < 0) {
+                        /*TODO: bug on be->fd! and not exiting here.*/
                         fprintf(stderr, "error when setting up backend!\n");
                         // dealloc_backend(be); /*TODO*/
                     }
