@@ -372,7 +372,7 @@ void sched_all_finish(struct sched_all *f) {
     free(f);
 }
 
-struct sched_all *sched_all_create(int ac, char *av[]) {
+struct sched_all *sched_all_create(int ac, char *av[], const char *ifname) {
     struct sched_all *f = SAFE_CALLOC(sizeof(struct sched_all));
 
     unsigned active_threads_set = 0;
@@ -406,7 +406,7 @@ struct sched_all *sched_all_create(int ac, char *av[]) {
     /* Init scheduler thread and run it. f->td[i] must be
      * initialized here. */
     f->sched = sched_init(ac, av);
-    f->nmd = netmap_init_realsched("vale0:1");
+    f->nmd = netmap_init_realsched(ifname);
     if (f->sched == NULL) {
         fprintf(stderr, "failed to create the scheduler\n");
         exit(1);

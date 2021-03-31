@@ -1923,12 +1923,15 @@ int main_server_select() {
     unlink(BPFHV_SERVER_PATH);
 }
 
+#define DEFAULT_SCH_IFNAME "vale0:x}1"
+
 int
 main(int argc, char **argv)
 {
     struct sigaction sa;
     int opt;
     int ret;
+    const char* sch_ifname = NULL;
 
     check_alignments();
 
@@ -1936,7 +1939,7 @@ main(int argc, char **argv)
     bp.busy_wait = 0;
     bp.collect_stats = 0;
 
-    while ((opt = getopt(argc, argv, "hp:P:i:CGBvb:Su:d:O:w:")) != -1) {
+    while ((opt = getopt(argc, argv, "hP:vBw:Su:i:")) != -1) {
         switch (opt) {
         case 'h':
             usage(argv[0]);
@@ -1958,7 +1961,7 @@ main(int argc, char **argv)
             bp.scheduler_mode = 1;
             bp.client_threshold_activation = atoi(optarg);
             if(bp.client_threshold_activation <= 0) {
-                fprintf(stderr, "scheduler activation threshold must be > 0.\n");
+                fprintf(stderr, "scheduler activation threshold must be > 0. %s\n",optarg);
                 return -1;
             }
             break;
@@ -1973,6 +1976,10 @@ main(int argc, char **argv)
                 fprintf(stderr, "-u option value must be in [0, 1000]\n");
                 return -1;
             }
+            break;
+
+        case 'i':
+            sch_ifname = optarg;
             break;
 
         default:
@@ -2003,7 +2010,8 @@ main(int argc, char **argv)
     }
 
     if(bp.scheduler_mode == 1) {
-        bp.sched_f = sched_all_create(argc, argv);
+        const char * ifname_p = (sch_ifname) ? sch_ifname : DEFAULT_SCH_IFNAME;
+        bp.sched_f = sched_all_create(argc, argv, ifname_p);
         bp.sched_enqueue = fun_sched_enqueue;
     }
 
