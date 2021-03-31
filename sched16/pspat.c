@@ -121,7 +121,34 @@ ns2tsc(struct sched_all *f, unsigned long int ns)
 #define TXI_END(_s)     (_s)->num_queues
 
 uint32_t
-sched_dequeue(struct sched_all *f, uint64_t now) {
+sched_dequeue_sink(struct sched_all *f, uint64_t now) {
+    uint32_t ndeq = 0;
+
+    while (f->next_link_idle <= now && ndeq < f->sched_batch_limit) {
+        /* dequeue one packet */
+        struct mbuf *m = sched_deq(f->sched);
+        if (m == NULL)
+            break;
+        f->next_link_idle += pkt_tsc(f, m->iov.iov_len);
+        ndeq++;
+
+        f->n_sch_released_bytes += m->iov.iov_len;
+
+        /* mark packet to client as dequeued (release it)
+         * we do it here to keep max mbufs equal to sum of cqueue sizes */
+        m->be->ops.txq_release(m->be, m->txq, m->idx);
+
+        /* free mbuf */
+        mbuf_cache_put(&f->mbc, m);
+    }
+
+    f->n_sch_released += ndeq;
+
+    return ndeq;
+}
+
+uint32_t
+sched_dequeue_netmap(struct sched_all *f, uint64_t now) {
     uint32_t ndeq = 0;
 
     /* netmap output interface variables */
@@ -193,6 +220,11 @@ sched_dequeue(struct sched_all *f, uint64_t now) {
     // }
 
     return ndeq;
+}
+
+uint32_t
+sched_dequeue(struct sched_all *f, uint64_t now) {
+    return f->sched_deq_f(f,now);
 }
 
 uint32_t
@@ -372,7 +404,7 @@ void sched_all_finish(struct sched_all *f) {
     free(f);
 }
 
-struct sched_all *sched_all_create(int ac, char *av[], const char *ifname) {
+struct sched_all *sched_all_create(int ac, char *av[], const char *ifname, uint iftype) {
     struct sched_all *f = SAFE_CALLOC(sizeof(struct sched_all));
 
     unsigned active_threads_set = 0;
@@ -394,6 +426,16 @@ struct sched_all *sched_all_create(int ac, char *av[], const char *ifname) {
     f->sched_batch_limit = 500;
     f->use_mmsg = 0;
 
+    switch(iftype) {
+        case PSPAT_IF_TYPE_SINK:
+            f->sched_deq_f = sched_dequeue_sink; break;
+        case PSPAT_IF_TYPE_NETMAP:
+            f->sched_deq_f = sched_dequeue_netmap; break;
+        default:
+            fprintf(stderr, "sched_all_create: invalid iftype\n");
+            return NULL;
+    }
+
     if (!active_threads_set || f->n_active_threads > f->n_clients) {
         f->n_active_threads = f->n_clients;
     }
@@ -409,7 +451,7 @@ struct sched_all *sched_all_create(int ac, char *av[], const char *ifname) {
     f->nmd = netmap_init_realsched(ifname);
     if (f->sched == NULL) {
         fprintf(stderr, "failed to create the scheduler\n");
-        exit(1);
+        return NULL;
     }
     f->stop = 0;
 

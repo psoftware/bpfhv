@@ -4,7 +4,9 @@
 #include "sched16.h"
 
 /* Scheduler instance management */
-struct sched_all *sched_all_create(int ac, char *av[], const char *ifname);
+#define PSPAT_IF_TYPE_NETMAP   0
+#define PSPAT_IF_TYPE_SINK     1
+struct sched_all *sched_all_create(int ac, char *av[], const char *ifname, uint iftype);
 void sched_all_start(struct sched_all *f, uint32_t num_mbuf);
 void sched_all_finish(struct sched_all *f);
 

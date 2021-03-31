@@ -1931,7 +1931,8 @@ main(int argc, char **argv)
     struct sigaction sa;
     int opt;
     int ret;
-    const char* sch_ifname = NULL;
+    const char* sch_ifname = DEFAULT_SCH_IFNAME;
+    uint sch_iftype = PSPAT_IF_TYPE_SINK;
 
     check_alignments();
 
@@ -1939,7 +1940,7 @@ main(int argc, char **argv)
     bp.busy_wait = 0;
     bp.collect_stats = 0;
 
-    while ((opt = getopt(argc, argv, "hP:vBw:Su:i:")) != -1) {
+    while ((opt = getopt(argc, argv, "hP:vBw:Su:i:m:")) != -1) {
         switch (opt) {
         case 'h':
             usage(argv[0]);
@@ -1982,6 +1983,17 @@ main(int argc, char **argv)
             sch_ifname = optarg;
             break;
 
+        case 'm':
+            if(!strcmp(optarg, "sink"))
+                sch_iftype = PSPAT_IF_TYPE_SINK;
+            else if(!strcmp(optarg, "netmap"))
+                sch_iftype = PSPAT_IF_TYPE_NETMAP;
+            else {
+                fprintf(stderr, "Invalid backend type. can be sink or netmap\n");
+                usage(argv[0]);
+                return -1;
+            }
+
         default:
             /* hack to pass arguments to sched_all_create */
             if(bp.scheduler_mode != 1) {
@@ -2010,8 +2022,11 @@ main(int argc, char **argv)
     }
 
     if(bp.scheduler_mode == 1) {
-        const char * ifname_p = (sch_ifname) ? sch_ifname : DEFAULT_SCH_IFNAME;
-        bp.sched_f = sched_all_create(argc, argv, ifname_p);
+        bp.sched_f = sched_all_create(argc, argv, sch_ifname, sch_iftype);
+        if(!bp.sched_f) {
+            fprintf(stderr, "Cannot initialize scheduler, exiting.\n");
+            return -1;
+        }
         bp.sched_enqueue = fun_sched_enqueue;
     }
 

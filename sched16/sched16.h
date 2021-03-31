@@ -248,6 +248,9 @@ struct sched_all {
     int timestamps;
     int use_mmsg;
 
+    /* Dequeue function based on chosen backend */
+    uint32_t(*sched_deq_f)(struct sched_all *f, uint64_t now);
+
     /* Scheduler output interface */
     struct nm_desc *nmd;
 
