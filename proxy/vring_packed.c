@@ -151,6 +151,13 @@ vring_packed_tx_ctx_init(struct bpfhv_tx_context *ctx, size_t num_tx_bufs)
 }
 
 static void
+vring_packed_tx_ctx_init_mark(struct bpfhv_tx_context *ctx, uint mark_mode)
+{
+    struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
+    vq->mark_on_guest = (mark_mode == MARK_MODE_GUEST);
+}
+
+static void
 vring_packed_rxq_notification(struct bpfhv_rx_context *ctx, int enable)
 {
     struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
@@ -458,6 +465,8 @@ vring_packed_txq_acquire(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send
     struct bpfhv_tx_context *ctx = txq->ctx.tx;
     struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
     size_t count = 0;
+    struct BpfhvBackendProcess *bp = be->parent_bp;
+    uint32_t mark;
 
     if (can_send) {
         /* Disable further kicks and start processing. */
@@ -503,20 +512,32 @@ vring_packed_txq_acquire(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send
                                 avail_desc->len);
             }
         } else {
-            // TODO: we could generalize this...
-            // int ret = be->send(be, &iov, 1);
-
             /* Save buffer id ring slot into hv_map. We can't pass slot ids to
              * release buffers because slots can be swapped, so we have to map
              * buffer ids to slot ids */
             struct vring_packed_desc_hv_map *hvmap = vring_packed_hv_map(vq);
             hvmap[avail_desc->id].slot_idx = avail_idx;
 
+            /* Implement mark mode. Mark here if MARK_MODE_HV is selected,
+             * use guest provided mark if MARK_MODE_GUEST is used, use
+             * null mark if no mark is selected. */
+            switch(bp->mark_mode) {
+                case MARK_MODE_GUEST:
+                    mark = avail_desc->mark;
+                    break;
+                case MARK_MODE_HV:
+                    mark = bp->hv_mark_pkt_fun(iov.iov_base, iov.iov_len);
+                    break;
+                case MARK_MODE_NO_MARK:
+                    mark = 0;
+                    break;
+                default: assert(0);
+            }
+
             /* Although iov can be easily obtained from descriptor at avail_idx,
              * we don't do that to avoid further cacheline bouncing made by the
              * scheduler thread. iov is passed by value. */
-            int ret = be->parent_bp->sched_enqueue(be->parent_bp, be, txq,
-                                         iov, avail_desc->id, avail_desc->mark);
+            int ret = bp->sched_enqueue(bp, be, txq, iov, avail_desc->id, mark);
 
             /* release dropped packet (scheduler will not do it for us) */
             if (unlikely(ret < 0)) {
@@ -654,6 +675,7 @@ BeOps vring_packed_ops = {
     .tx_ctx_size = vring_packed_tx_ctx_size,
     .rx_ctx_init = vring_packed_rx_ctx_init,
     .tx_ctx_init = vring_packed_tx_ctx_init,
+    .tx_ctx_init_mark = vring_packed_tx_ctx_init_mark,
     .rxq_kicks = vring_packed_rxq_notification,
     .txq_kicks = vring_packed_txq_notification,
     .rxq_push = vring_packed_rxq_push,

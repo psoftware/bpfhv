@@ -7,6 +7,8 @@
 #endif
 
 static int BPFHV_FUNC(rx_pkt_alloc, struct bpfhv_rx_context *ctx);
+static void* BPFHV_FUNC(pkt_data, struct bpfhv_tx_context *ctx);
+static int BPFHV_FUNC(pkt_size, struct bpfhv_tx_context *ctx);
 static int BPFHV_FUNC(smp_mb_full);
 
 #define ACCESS_ONCE(x) (*(volatile typeof(x) *)&(x))
@@ -83,9 +85,12 @@ vring_packed_kick_needed(struct vring_packed_virtq *vq, uint16_t num_published)
     return vring_need_event(old_idx, event_idx, vq->g.next_avail_idx);
 }
 
+#include "net_headers.h" /* dependency for mark_fun.h */
+#include "mark_fun.h"
+
 static inline uint32_t
-mark_packet(struct bpfhv_tx_context *ctx) {
-    return 0;
+vring_mark_packet(struct bpfhv_tx_context *ctx) {
+    return mark_packet_fun((uint8_t*)pkt_data(ctx), pkt_size(ctx));
 }
 
 __section("txp")
@@ -93,12 +98,14 @@ int vring_packed_txp(struct bpfhv_tx_context *ctx)
 {
     struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
     struct bpfhv_buf *txb = ctx->bufs + 0;
+    uint32_t mark;
 
     if (ctx->num_bufs != 1) {
         return -1;
     }
 
-    uint32_t mark = mark_packet(ctx);
+    mark = (vq->mark_on_guest) ? vring_mark_packet(ctx) : 0;
+
     vring_packed_add(vq, txb, 0, mark);
     smp_mb_full();
     ctx->oflags = vring_packed_kick_needed(vq, 1) ? BPFHV_OFLAGS_KICK_NEEDED : 0;

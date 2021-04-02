@@ -129,6 +129,7 @@ struct vring_packed_virtq {
     uint64_t state_ofs;
     uint32_t num_desc;
     uint64_t hv_map_ofs;
+    uint8_t mark_on_guest;
 
     /* Notification suppression information. Shared, owned by the guest. */
     MY_CACHELINE_ALIGNED

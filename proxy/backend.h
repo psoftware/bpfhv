@@ -92,6 +92,7 @@ typedef struct BeOps {
     size_t (*tx_ctx_size)(size_t num_rx_bufs);
     void (*rx_ctx_init)(struct bpfhv_rx_context *ctx, size_t num_rx_bufs);
     void (*tx_ctx_init)(struct bpfhv_tx_context *ctx, size_t num_tx_bufs);
+    void (*tx_ctx_init_mark)(struct bpfhv_tx_context *ctx, uint mark_mode);
     size_t (*rxq_push)(struct BpfhvBackend *be,
                       BpfhvBackendQueue *rxq, int *can_receive);
     /* do acquire, consume and notify packets for in-order buffer consumption */
@@ -257,6 +258,12 @@ typedef struct BpfhvBackendProcess {
      * which sends packets to a unique nic */
     int scheduler_mode;
     void *sched_f;
+
+#define MARK_MODE_NO_MARK  0
+#define MARK_MODE_HV       1
+#define MARK_MODE_GUEST    2
+    uint8_t mark_mode;
+    uint32_t (*hv_mark_pkt_fun)(uint8_t *data, uint32_t pkt_sz);
 
     /* Send and receive to scheduler */
     SchedEnqueueFun sched_enqueue;

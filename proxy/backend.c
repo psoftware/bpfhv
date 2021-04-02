@@ -26,6 +26,15 @@
 #include <linux/if.h>
 #include "../sched16/pspat.h"
 
+/* TODO: maybe move these dependencies in mark_fun
+ * abstracting in some way */
+#include <linux/ip.h>
+#include <linux/udp.h>
+#include <linux/tcp.h>
+#include <arpa/inet.h>
+#define be16_to_cpu(x) ntohs((x))
+#include "mark_fun.h"
+
 #include "backend.h"
 
 int verbose = 0;
@@ -1207,6 +1216,10 @@ process_guest_message(BpfhvBackend *be)
             if (ctx) {
                 be->ops.tx_ctx_init(be->q[queue_idx].ctx.tx,
                                   be->num_tx_bufs);
+                /* optional init for mark support */
+                if(be->ops.tx_ctx_init_mark)
+                    be->ops.tx_ctx_init_mark(be->q[queue_idx].ctx.tx,
+                                  bp.mark_mode);
             }
         }
         if (verbose) {
@@ -1933,6 +1946,7 @@ main(int argc, char **argv)
     int ret;
     const char* sch_ifname = DEFAULT_SCH_IFNAME;
     uint sch_iftype = PSPAT_IF_TYPE_SINK;
+    uint8_t sch_mark_mode = MARK_MODE_NO_MARK;
 
     check_alignments();
 
@@ -1940,7 +1954,7 @@ main(int argc, char **argv)
     bp.busy_wait = 0;
     bp.collect_stats = 0;
 
-    while ((opt = getopt(argc, argv, "hP:vBw:Su:i:m:")) != -1) {
+    while ((opt = getopt(argc, argv, "hP:vBw:Su:i:m:f:")) != -1) {
         switch (opt) {
         case 'h':
             usage(argv[0]);
@@ -1993,6 +2007,21 @@ main(int argc, char **argv)
                 usage(argv[0]);
                 return -1;
             }
+            break;
+
+        case 'f':
+            if(!strcmp(optarg, "none"))
+                sch_mark_mode = MARK_MODE_NO_MARK;
+            else if(!strcmp(optarg, "hv"))
+                sch_mark_mode = MARK_MODE_HV;
+            else if(!strcmp(optarg, "guest"))
+                sch_mark_mode = MARK_MODE_GUEST;
+            else {
+                fprintf(stderr, "Invalid mark side name. can be none, hv or guest\n");
+                usage(argv[0]);
+                return -1;
+            }
+            break;
 
         default:
             /* hack to pass arguments to sched_all_create */
@@ -2028,6 +2057,25 @@ main(int argc, char **argv)
             return -1;
         }
         bp.sched_enqueue = fun_sched_enqueue;
+
+        bp.mark_mode = sch_mark_mode;
+        switch(sch_mark_mode) {
+            case MARK_MODE_NO_MARK:
+                bp.hv_mark_pkt_fun = NULL; break;
+            case MARK_MODE_HV:
+                bp.hv_mark_pkt_fun = mark_packet_fun; break;
+            case MARK_MODE_GUEST:
+                bp.hv_mark_pkt_fun = NULL; break;
+        }
+
+        printf("Scheduler mode enabled, config:\n");
+        printf("\tnic type:\t%s\n", (sch_iftype == PSPAT_IF_TYPE_SINK) ? "sink" :
+                                    (sch_iftype == PSPAT_IF_TYPE_NETMAP) ? "netmap" : "??");
+        printf("\tnic name:\t%s\n", sch_ifname);
+        printf("\tmark on:\t%s\n", (bp.mark_mode == MARK_MODE_NO_MARK) ? "no mark" :
+                                    (bp.mark_mode == MARK_MODE_HV) ? "hypervisor" :
+                                    (bp.mark_mode == MARK_MODE_GUEST) ? "guest" : "??");
+        printf("\t#clients:\t%u\n", bp.client_threshold_activation);
     }
 
     if (bp.pidfile != NULL) {

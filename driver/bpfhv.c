@@ -918,16 +918,16 @@ BPF_CALL_2(bpf_hv_print_num, const char *, str, long long int, x)
     return 0;
 }
 
-BPF_CALL_1(bpf_hv_pkt_transport_header, struct bpfhv_tx_context *, ctx)
+BPF_CALL_1(bpf_hv_pkt_data, struct bpfhv_tx_context *, ctx)
 {
 	struct sk_buff *skb = (struct sk_buff *)(uintptr_t)ctx->packet;
-	return (uintptr_t)skb_transport_header(skb);
+	return (uintptr_t)skb->data;
 }
 
-BPF_CALL_1(bpf_hv_pkt_network_header, struct bpfhv_tx_context *, ctx)
+BPF_CALL_1(bpf_hv_pkt_size, struct bpfhv_tx_context *, ctx)
 {
 	struct sk_buff *skb = (struct sk_buff *)(uintptr_t)ctx->packet;
-	return (uintptr_t)skb_network_header(skb);
+	return (uintptr_t)skb->len;
 }
 
 #undef PROGDUMP
@@ -1240,11 +1240,11 @@ bpfhv_helper_calls_fixup(struct bpfhv_info *bi, struct bpf_insn *insns,
 		case BPFHV_FUNC_print_num:
 			func = bpf_hv_print_num;
 			break;
-		case BPFHV_FUNC_pkt_transport_header:
-			func = bpf_hv_pkt_transport_header;
+		case BPFHV_FUNC_pkt_data:
+			func = bpf_hv_pkt_data;
 			break;
-		case BPFHV_FUNC_pkt_network_header:
-			func = bpf_hv_pkt_network_header;
+		case BPFHV_FUNC_pkt_size:
+			func = bpf_hv_pkt_size;
 			break;
 		default:
 			netif_err(bi, drv, bi->netdev,

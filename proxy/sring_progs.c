@@ -8,8 +8,8 @@
 #endif
 
 static int BPFHV_FUNC(rx_pkt_alloc, struct bpfhv_rx_context *ctx);
-static void* BPFHV_FUNC(pkt_network_header, struct bpfhv_tx_context *ctx);
-static void* BPFHV_FUNC(pkt_transport_header, struct bpfhv_tx_context *ctx);
+static void* BPFHV_FUNC(pkt_data, struct bpfhv_tx_context *ctx);
+static int BPFHV_FUNC(pkt_size, struct bpfhv_tx_context *ctx);
 static int BPFHV_FUNC(smp_mb_full);
 
 
@@ -24,39 +24,11 @@ clear_met_cons(uint32_t old_clear, uint32_t cons, uint32_t new_clear)
     return (uint32_t)(new_clear - cons - 1) < (uint32_t)(new_clear - old_clear);
 }
 
-uint32_t mark_packet(struct bpfhv_tx_context *ctx) {
-    /* 1) extract data from packet for marking */
-    struct iphdr *iph = (struct iphdr *)pkt_network_header(ctx);
+#include "mark_fun.h"
 
-    void *transport_header = pkt_transport_header(ctx);
-    struct udphdr *udp_header;
-    struct tcphdr *tcp_header;
-    uint32_t src_ip = (unsigned int)iph->saddr;
-    uint32_t dest_ip = (unsigned int)iph->daddr;
-    uint16_t src_port = 0;
-    uint16_t dest_port = 0;
-
-    if (iph->protocol == IPPROTO_UDP) {
-        udp_header = (struct udphdr *)transport_header;
-        src_port = (unsigned int)be16_to_cpu(udp_header->source);
-    } else if (iph->protocol == IPPROTO_TCP) {
-        tcp_header = (struct tcphdr *)transport_header;
-        src_port = (unsigned int)be16_to_cpu(tcp_header->source);
-        dest_port = (unsigned int)be16_to_cpu(tcp_header->dest);
-    }
-
-    /* 2) mark packets */
-    const uint32_t RESERVED = 0;
-    const uint32_t STREAM_1 = 10;
-    const uint32_t STREAM_2 = 11;
-    const uint32_t DEFAULT_CLASS = 99; /* = priv->queue_n; last scheduler queue */
-    /* rule list */
-    if(iph->protocol == IPPROTO_ICMP && iph->tos == 0x50)
-        return STREAM_1;
-    if(iph->protocol == IPPROTO_ICMP && iph->tos == 0x51)
-        return STREAM_2;
-
-    return DEFAULT_CLASS;
+static inline uint32_t
+sring_mark_packet(struct bpfhv_tx_context *ctx) {
+    return mark_packet_fun((uint8_t*)pkt_data(ctx), pkt_size(ctx));
 }
 
 __section("txp")
@@ -75,7 +47,7 @@ int sring_txp(struct bpfhv_tx_context *ctx)
     txd->cookie = txb->cookie;
     txd->paddr = txb->paddr;
     txd->len = txb->len;
-    txd->mark = mark_packet(ctx);
+    txd->mark = sring_mark_packet(ctx);
 
     /* Make sure stores to sring entries happen before store to priv->prod. */
     smp_mb_release();
