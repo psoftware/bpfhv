@@ -138,6 +138,7 @@ struct mbuf_cache {
 void *sched_init(int ac, char *av[]);
 int  sched_enq(void *, struct mbuf *);
 struct mbuf *sched_deq(void *);
+uint32_t get_flow_count(void *c);
 
 int dump(void *c);
 
@@ -247,6 +248,9 @@ struct sched_all {
     double bytes_to_tsc;
     int timestamps;
     int use_mmsg;
+
+    /* copy of sched->flows */
+    uint32_t max_mark;
 
     /* Dequeue function based on chosen backend */
     uint32_t(*sched_deq_f)(struct sched_all *f, uint64_t now);

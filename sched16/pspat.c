@@ -233,6 +233,9 @@ fun_sched_enqueue(struct BpfhvBackendProcess *bp, struct BpfhvBackend *be, Bpfhv
     ND(3, "sz %u", iov.iov_len);
     struct sched_all *f = bp->sched_f;
 
+    if(unlikely(mark >= f->max_mark))
+        return 1;
+
     /* be, txq and opaque_idx are needed to eventually release buf */
     struct mbuf *m = mbuf_cache_get(&f->mbc);
     m->iov = iov;
@@ -448,6 +451,7 @@ struct sched_all *sched_all_create(int ac, char *av[], const char *ifname, uint 
     /* Init scheduler thread and run it. f->td[i] must be
      * initialized here. */
     f->sched = sched_init(ac, av);
+    f->max_mark = get_flow_count(f->sched);
     f->nmd = netmap_init_realsched(ifname);
     if (f->sched == NULL) {
         fprintf(stderr, "failed to create the scheduler\n");

@@ -219,6 +219,12 @@ gnet_stats_deq(struct cfg_s *c, struct mbuf *mb)
 	}
 }
 
+uint32_t
+get_flow_count(void *_c) {
+	struct cfg_s *c = _c;
+	return c->flows;
+}
+
 #if 0
 static int
 mainloop(struct cfg_s *c)
