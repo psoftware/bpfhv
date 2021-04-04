@@ -560,6 +560,7 @@ process_packets_spin_many(BpfhvBackendBatch *bc)
 
         /* scheduler requires to know when routine starts */
         uint64_t now = rdtsc();
+        size_t dropped = 0;
 
         /* do TX after, using scheduling */
         for(size_t j = 0; j < bc->used_instances; ++j) {
@@ -570,10 +571,11 @@ process_packets_spin_many(BpfhvBackendBatch *bc)
              * to the backend interface. */
             for (i = TXI_BEGIN(be); i < TXI_END(be); i++) {
                 BpfhvBackendQueue *txq = be->q + i;
-                size_t count;
+                size_t count, dr;
 
                 /* acquire bufs and sends them to scheduler (already done by this txq_acquire) */
-                count = ops.txq_acquire(be, txq, /*can_send=*/NULL);
+                count = ops.txq_acquire(be, txq, /*can_send=*/NULL, &dr);
+                dropped += dr;
 
                 if (unlikely(very_verbose && count > 0)) {
                     printf("1) acquired %lu packets\n", count);
@@ -590,8 +592,9 @@ process_packets_spin_many(BpfhvBackendBatch *bc)
 
         /* scheduler decouples acquire and release of packets, and packets
          * are only released after dequeuing. this mean that we should
-         * check for notifications after dequeue */
-        if(ndeq > 0) {
+         * check for notifications after dequeue.
+         * also, notify if some packets have been dropped */
+        if(ndeq > 0 || unlikely(dropped)) {
             for(size_t j = 0; j < bc->used_instances; ++j) {
                 BpfhvBackend *be = &(bc->instance[j]);
                 BeOps ops = be->ops;

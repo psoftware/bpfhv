@@ -109,6 +109,7 @@ struct vring_packed_virtq {
         uint8_t used_wrap_counter;
         uint16_t avail_used_flags;
         uint32_t pending_inuse_counter;
+        uint32_t avail_dropped;
         uint32_t pending_used_counter;
     } g;
 

@@ -100,7 +100,7 @@ typedef struct BeOps {
                        BpfhvBackendQueue *txq, int *can_send);
     /* split acquire, consume and notify for out of order buffer consumption */
     size_t (*txq_acquire)(struct BpfhvBackend *be,
-                       BpfhvBackendQueue *txq, int *can_send);
+                       BpfhvBackendQueue *txq, int *can_send, size_t *dropped);
     void (*txq_release)(struct BpfhvBackend *be,
                        BpfhvBackendQueue *txq, uint64_t opaque_idx);
     size_t (*txq_notify)(struct BpfhvBackend *be, BpfhvBackendQueue *txq);

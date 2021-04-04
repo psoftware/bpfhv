@@ -110,6 +110,7 @@ vring_packed_init(struct vring_packed_virtq *vq, size_t num)
     vq->g.avail_used_flags = 1 << VRING_PACKED_DESC_F_AVAIL;
     vq->g.pending_inuse_counter = 0;
     vq->g.pending_used_counter = 0;
+    vq->g.avail_dropped = 0;
 
     vq->h.next_avail_idx = 0;
     vq->h.next_used_idx = 0;
@@ -460,11 +461,11 @@ vring_packed_txq_drain(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
 
 /* return number of acquired packets */
 static size_t
-vring_packed_txq_acquire(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send)
+vring_packed_txq_acquire(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send, size_t *dropped)
 {
     struct bpfhv_tx_context *ctx = txq->ctx.tx;
     struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
-    size_t count = 0;
+    size_t count = 0, _dropped = 0;
     struct BpfhvBackendProcess *bp = be->parent_bp;
     uint32_t mark;
 
@@ -484,11 +485,13 @@ vring_packed_txq_acquire(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send
              * bail out. Otherwise we enable TX kicks and double check for
              * more available descriptors. */
             if (can_send == NULL) {
+                *dropped = _dropped;
                 break;
             }
             vring_packed_notification(vq, /*enable=*/1);
             __atomic_thread_fence(__ATOMIC_SEQ_CST);
             if (!vring_packed_more_avail(vq)) {
+                *dropped = _dropped;
                 break;
             }
             vring_packed_notification(vq, /*enable=*/0);
@@ -511,6 +514,7 @@ vring_packed_txq_acquire(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send
                                 "len %u\n", avail_desc->addr,
                                 avail_desc->len);
             }
+            /* TODO: should we release/notify here? */
         } else {
             /* Save buffer id ring slot into hv_map. We can't pass slot ids to
              * release buffers because slots can be swapped, so we have to map
@@ -539,16 +543,18 @@ vring_packed_txq_acquire(BpfhvBackend *be, BpfhvBackendQueue *txq, int *can_send
              * scheduler thread. iov is passed by value. */
             int ret = bp->sched_enqueue(bp, be, txq, iov, avail_desc->id, mark);
 
-            /* release dropped packet (scheduler will not do it for us) */
-            if (unlikely(ret < 0)) {
+            /* release dropped packet (caller cannot not do it for us) */
+            if (unlikely(ret > 0)) {
                 if (unlikely(verbose))
                     fprintf(stderr, "Dropped packet on sched_enqueue!\n");
-                vring_packed_ops.txq_release(be, txq, (uint64_t)avail_idx);
-                /* (optimiz.) we should notify but scheduler will do it for us later */
+                vring_packed_ops.txq_release(be, txq, avail_desc->id);
+                /* delay/group dropped packet notifications */
+                _dropped++;
+                /* update stats */
+                vq->g.avail_dropped++;
             }
 
-            /* TODO: we actually don't care about dropping not enqueued packets.
-             * also, can_send does not have any meaning when enqueuing to scheduler */
+            /* TODO: can_send does not have any meaning when enqueuing to scheduler */
             // if (unlikely(ret <= 0)) {
             //     /* Backend is blocked (or failed), so we need to stop.
             //      * The last packet was not transmitted, so we don't
