@@ -655,11 +655,11 @@ process_packets(void *opaque)
         for(size_t j = 0; j < bc->used_instances; ++j) {
             BpfhvBackend *be = &(bc->instance[j]);
             for (size_t i = TXI_BEGIN(be); i < TXI_END(be); i++) {
-                BpfhvBackendQueue *txq = be->q + i;
-                printf("num_bufs = %u\n", txq->ctx.tx->num_bufs);
                 num_mbufs += be->num_tx_bufs;
             }
         }
+        if(unlikely(verbose))
+            printf("num_bufs = %u\n", num_mbufs);
 
         sched_all_start(f, num_mbufs);
         /* start packet processing */
@@ -767,6 +767,7 @@ backend_stop(BpfhvBackend *be)
         return ret;
     }
     bc->th_running = 0;
+    be->running = 0;
 
     return 0;
 }

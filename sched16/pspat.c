@@ -121,6 +121,28 @@ ns2tsc(struct sched_all *f, unsigned long int ns)
 #define TXI_END(_s)     (_s)->num_queues
 
 uint32_t
+sched_dequeue_release_all(struct sched_all *f) {
+    uint32_t ndeq = 0;
+
+    while (1) {
+        /* dequeue one packet */
+        struct mbuf *m = sched_deq(f->sched);
+        if (m == NULL)
+            break;
+        ndeq++;
+
+        /* mark packet to client as dequeued (release it)
+         * we do it here to keep max mbufs equal to sum of cqueue sizes */
+        m->be->ops.txq_release(m->be, m->txq, m->idx);
+
+        /* free mbuf */
+        mbuf_cache_put(&f->mbc, m);
+    }
+
+    return ndeq;
+}
+
+uint32_t
 sched_dequeue_sink(struct sched_all *f, uint64_t now) {
     uint32_t ndeq = 0;
 
@@ -387,6 +409,9 @@ void sched_all_finish(struct sched_all *f) {
     /* ignore 1 idle at startup */
     if(f->stat_sched_idle != 0)
         f->stat_sched_idle--;
+
+    /* empty queues */
+    sched_dequeue_release_all(f);
 
     /* print stats */
     {
