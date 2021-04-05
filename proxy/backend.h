@@ -271,6 +271,9 @@ typedef struct BpfhvBackendProcess {
     /* Scheduler waits for a predefined number of clients
      * before starting, and doesn't accept more of them */
     int client_threshold_activation;
+
+    /* CPU Affinity */
+    int sched_cpu;
     /*********************************/
 
     /* batches per thread */

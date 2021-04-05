@@ -25,6 +25,7 @@
 #endif
 #include <linux/if.h>
 #include "../sched16/pspat.h"
+#include "../sched16/tsc.h"
 
 /* TODO: maybe move these dependencies in mark_fun
  * abstracting in some way */
@@ -645,7 +646,13 @@ process_packets(void *opaque)
     }
 
     if (bp.scheduler_mode) {
-        struct sched_all *f = bc->parent_bp->sched_f;
+        BpfhvBackendProcess *bp = bc->parent_bp;
+        int sched_cpu = bp->sched_cpu;
+        struct sched_all *f = bp->sched_f;
+
+        /* Set thread affinity */
+        if(sched_cpu >= 0)
+            runon("scheduler", sched_cpu);
 
         /* for now we have only one thread (batch) to fetch all the data */
         assert(BPFHV_K_THREADS == 1);
@@ -1957,8 +1964,9 @@ main(int argc, char **argv)
     bp.pidfile = NULL;
     bp.busy_wait = 0;
     bp.collect_stats = 0;
+    bp.sched_cpu = -1;
 
-    while ((opt = getopt(argc, argv, "hP:vBw:Su:i:m:f:")) != -1) {
+    while ((opt = getopt(argc, argv, "hP:vBw:Su:i:m:f:a:")) != -1) {
         switch (opt) {
         case 'h':
             usage(argv[0]);
@@ -2022,6 +2030,14 @@ main(int argc, char **argv)
                 sch_mark_mode = MARK_MODE_GUEST;
             else {
                 fprintf(stderr, "Invalid mark side name. can be none, hv or guest\n");
+                usage(argv[0]);
+                return -1;
+            }
+            break;
+        case 'a':
+            bp.sched_cpu = atoi(optarg);
+            if(bp.sched_cpu < 0) {
+                fprintf(stderr, "cpu affinity should be >= 0. %s\n",optarg);
                 usage(argv[0]);
                 return -1;
             }

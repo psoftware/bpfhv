@@ -34,6 +34,7 @@ proxy: $(PROGS)
 
 BESRCS=proxy/backend.c proxy/sring.c proxy/sring_gso.c proxy/vring_packed.c
 BEHDRS=include/bpfhv-proxy.h include/bpfhv.h proxy/sring.h proxy/sring_gso.h proxy/vring_packed.h proxy/backend.h sched16/pspat.h include/net_headers.h proxy/mark_fun.h
+BEHDRS+=sched16/tsc.h
 BEOBJS=$(BESRCS:%.c=%.o)
 
 # scheduler related sources
