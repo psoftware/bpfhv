@@ -344,6 +344,9 @@ sched_idle_sleep(struct sched_all *f, uint64_t now, uint32_t ndeq) {
      *  >now    lim E: publish, ahead, sleep till next (or now+timeout?)
      */
 
+    if(now == 0)
+        f->stat_check_idle++;
+
     if (f->next_link_idle <= now) { /* XXX make it wrap-safe */
         if (ndeq < f->sched_batch_limit) {
             f->next_link_idle = now; /* no traffic in this interval */
@@ -420,9 +423,9 @@ void sched_all_finish(struct sched_all *f) {
         D("waiting for scheduler to terminate");
         pthread_join(f->sched_id, NULL);
         duration = (double)(f->sched_end - f->sched_start)/f->ticks_per_second;
-        D("sched_idle: %u", (u_int)f->stat_sched_idle);
         D("check_idle: %u", (u_int)f->stat_check_idle);
-        D("stat_early: %u", (u_int)f->stat_early);
+        D("stat_early/batch_full: %u/%u", (u_int)f->stat_early, (u_int)f->stat_batch_full);
+        D("sched_idle: %u", (u_int)f->stat_sched_idle);
         D("TOTAL: %.3e bits %.3e bps %.3e pkts %.3e pps",
           8.0*bytes, 8.0*bytes/duration, (double)pkts, pkts/duration);
     }
