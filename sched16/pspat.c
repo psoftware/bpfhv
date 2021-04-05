@@ -344,7 +344,7 @@ sched_idle_sleep(struct sched_all *f, uint64_t now, uint32_t ndeq) {
      *  >now    lim E: publish, ahead, sleep till next (or now+timeout?)
      */
 
-    if(now == 0)
+    if(ndeq == 0)
         f->stat_check_idle++;
 
     if (f->next_link_idle <= now) { /* XXX make it wrap-safe */
