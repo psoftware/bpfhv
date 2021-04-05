@@ -461,7 +461,9 @@ struct sched_all *sched_all_create(int ac, char *av[], const char *ifname, uint 
         case PSPAT_IF_TYPE_SINK:
             f->sched_deq_f = sched_dequeue_sink; break;
         case PSPAT_IF_TYPE_NETMAP:
-            f->sched_deq_f = sched_dequeue_netmap; break;
+            f->sched_deq_f = sched_dequeue_netmap;
+            f->nmd = netmap_init_realsched(ifname);
+            break;
         default:
             fprintf(stderr, "sched_all_create: invalid iftype\n");
             return NULL;
@@ -479,12 +481,11 @@ struct sched_all *sched_all_create(int ac, char *av[], const char *ifname, uint 
     /* Init scheduler thread and run it. f->td[i] must be
      * initialized here. */
     f->sched = sched_init(ac, av);
-    f->max_mark = get_flow_count(f->sched);
-    f->nmd = netmap_init_realsched(ifname);
     if (f->sched == NULL) {
         fprintf(stderr, "failed to create the scheduler\n");
         return NULL;
     }
+    f->max_mark = get_flow_count(f->sched);
     f->stop = 0;
 
     return f;
