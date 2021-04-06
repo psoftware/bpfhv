@@ -742,6 +742,9 @@ backend_drain(BpfhvBackend *be)
     }
 }
 
+
+int update_status_file(BpfhvBackendProcess *bp);
+
 /* Helper function to stop the packet processing thread and join it. */
 static int
 backend_stop(BpfhvBackend *be)
@@ -761,22 +764,26 @@ backend_stop(BpfhvBackend *be)
 
     int ret;
 
-    be->running = 0;
-
     BpfhvBackendBatch *bc = be->parent_bc;
-    if(!bc->th_running)
+    if(bc->th_running) {
+        //eventfd_signal(bc->stopfd);
+        ACCESS_ONCE(bc->stopflag) = BPFHV_STOPFD_HALT;
+        __atomic_thread_fence(__ATOMIC_RELEASE);
+        ret = pthread_join(bc->th, NULL);
+        if (ret) {
+            fprintf(stderr, "pthread_join() failed: %s\n",
+                    strerror(ret));
+            return ret;
+        }
+        bc->th_running = 0;
+    }
+
+    if(!be->running)
         return -1;
 
-    //eventfd_signal(bc->stopfd);
-    ACCESS_ONCE(bc->stopflag) = BPFHV_STOPFD_HALT;
-    __atomic_thread_fence(__ATOMIC_RELEASE);
-    ret = pthread_join(bc->th, NULL);
-    if (ret) {
-        fprintf(stderr, "pthread_join() failed: %s\n",
-                strerror(ret));
-        return ret;
-    }
-    bc->th_running = 0;
+    be->running = 0;
+    bc->used_instances--;
+    update_status_file(&bp);
 
     return 0;
 }
@@ -857,6 +864,9 @@ sigint_handler(int signum)
     }
     if (bp.pidfile != NULL) {
         unlink(bp.pidfile);
+    }
+    if (bp.status_file != NULL) {
+        unlink(bp.status_file);
     }
     unlink(BPFHV_SERVER_PATH);
     exit(EXIT_SUCCESS);
@@ -1589,6 +1599,8 @@ int activate_backend(BpfhvBackend *be) {
         }
     }
 
+    update_status_file(&bp);
+
     return 0;
 }
 
@@ -1949,6 +1961,25 @@ int main_server_select() {
     unlink(BPFHV_SERVER_PATH);
 }
 
+int update_status_file(BpfhvBackendProcess *bp) {
+    BpfhvBackendBatch *bc = &(bp->thread_batch[0]);
+
+    if (bp->status_file != NULL) {
+        FILE *f = fopen(bp->status_file, "w");
+
+        if (f == NULL) {
+            fprintf(stderr, "Failed to open status file: %s\n", strerror(errno));
+            return -1;
+        }
+
+        fprintf(f, "Scheduler thread active:%u\n", bc->th_running);
+        fprintf(f, "Active clients:%u\n", bc->used_instances);
+        fclose(f);
+    }
+
+    return 0;
+}
+
 #define DEFAULT_SCH_IFNAME "vale0:x}1"
 
 int
@@ -1964,11 +1995,12 @@ main(int argc, char **argv)
     check_alignments();
 
     bp.pidfile = NULL;
+    bp.status_file = NULL;
     bp.busy_wait = 0;
     bp.collect_stats = 0;
     bp.sched_cpu = -1;
 
-    while ((opt = getopt(argc, argv, "hP:vBw:Su:i:m:f:a:")) != -1) {
+    while ((opt = getopt(argc, argv, "hP:vBw:Su:i:m:f:a:s:")) != -1) {
         switch (opt) {
         case 'h':
             usage(argv[0]);
@@ -2045,6 +2077,10 @@ main(int argc, char **argv)
             }
             break;
 
+        case 's':
+            bp.status_file = optarg;
+            break;
+
         default:
             /* hack to pass arguments to sched_all_create */
             if(bp.scheduler_mode != 1) {
@@ -2099,6 +2135,8 @@ main(int argc, char **argv)
                                     (bp.mark_mode == MARK_MODE_HV) ? "hypervisor" :
                                     (bp.mark_mode == MARK_MODE_GUEST) ? "guest" : "??");
         printf("\t#clients:\t%u\n", bp.client_threshold_activation);
+
+        update_status_file(&bp);
     }
 
     if (bp.pidfile != NULL) {
@@ -2133,6 +2171,9 @@ main(int argc, char **argv)
 
     if (bp.pidfile != NULL) {
         unlink(bp.pidfile);
+    }
+    if (bp.status_file != NULL) {
+        unlink(bp.status_file);
     }
 
     return ret;

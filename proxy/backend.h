@@ -274,6 +274,9 @@ typedef struct BpfhvBackendProcess {
 
     /* CPU Affinity */
     int sched_cpu;
+
+    /* File updated with backend status (helpful for scripts) */
+    const char *status_file;
     /*********************************/
 
     /* batches per thread */
