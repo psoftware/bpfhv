@@ -2093,7 +2093,8 @@ main(int argc, char **argv)
         printf("Scheduler mode enabled, config:\n");
         printf("\tnic type:\t%s\n", (sch_iftype == PSPAT_IF_TYPE_SINK) ? "sink" :
                                     (sch_iftype == PSPAT_IF_TYPE_NETMAP) ? "netmap" : "??");
-        printf("\tnic name:\t%s\n", sch_ifname);
+        if(sch_iftype != PSPAT_IF_TYPE_SINK)
+            printf("\tnic name:\t%s\n", sch_ifname);
         printf("\tmark on:\t%s\n", (bp.mark_mode == MARK_MODE_NO_MARK) ? "no mark" :
                                     (bp.mark_mode == MARK_MODE_HV) ? "hypervisor" :
                                     (bp.mark_mode == MARK_MODE_GUEST) ? "guest" : "??");
