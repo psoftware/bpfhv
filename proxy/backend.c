@@ -760,6 +760,9 @@ backend_stop(BpfhvBackend *be)
     be->running = 0;*/
 
     int ret;
+
+    be->running = 0;
+
     BpfhvBackendBatch *bc = be->parent_bc;
     if(!bc->th_running)
         return -1;
@@ -774,7 +777,6 @@ backend_stop(BpfhvBackend *be)
         return ret;
     }
     bc->th_running = 0;
-    be->running = 0;
 
     return 0;
 }
