@@ -785,7 +785,8 @@ backend_stop(BpfhvBackend *be)
     bc->used_instances--;
     update_status_file(&bp);
 
-    return 0;
+    /* TODO: 0 is causing segfaults... don't drain for now */
+    return -1;
 }
 
 static void
