@@ -2,11 +2,15 @@
 # Code executed on guest at startup, after shared fs mount
 IFNAME=ens4
 ETHFILE=/sys/class/net/$IFNAME
+HVDIR=/mnt/hv/
 SYNCFILE=/mnt/hv/release_barrier
+
+# remove this: avoid kernel addr rand for gdb debugging
+#echo 0 > /proc/sys/kernel/randomize_va_space
 
 # Setup bpfhv module and netmap
 cd /root
-insmod bpfhv.ko
+insmod $HVDIR/bin/bpfhv.ko tx_napi=1
 
 # wait for ens4 to come up
 while [ ! -d "$ETHFILE" ]; do
@@ -14,7 +18,11 @@ while [ ! -d "$ETHFILE" ]; do
 done
 
 ip link set ${IFNAME} up
-insmod netmap.ko
+insmod $HVDIR/bin/netmap.ko
+
+# evaluate if to remove: disable netmap txqdisc!
+#sleep 1
+#echo 0 > /sys/module/netmap/parameters/generic_txqdisc
 
 # Get guest info
 sleep 1
@@ -27,11 +35,15 @@ while [ ! -f "$SYNCFILE" ]; do
         sleep 0.2
 done
 
+TESTFILENAME=$HVDIR/tests/result_$(printf '%02u\n' $VMID).txt
 # Perform test
 echo "Started."
-./pkt-gen -f tx -i netmap:${IFNAME} -n 8000000 -a 0 -A > /mnt/hv/tests/result_${VMID}.txt
+# 1) pkt-gen
+./pkt-gen -f tx -i netmap:${IFNAME} -n 8000000 -a 0 -A > $TESTFILENAME
+# 2) nmreplay
+#$HVDIR/bin/nmreplay-nort-s -f $HVDIR/traces/bigFlows.pcap -i netmap:$IFNAME -B 5G -N 8000000 -A > $TESTFILENAME
 echo "Ended."
 
 # Wait for sharedfs to flush...
-sleep 6
+sleep 12
 shutdown 0
