@@ -401,7 +401,7 @@ bpfhv_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		txq->bi = bi;
 		txq->idx = i;
 		txq->kick_pending = false;
-		netif_napi_add(netdev, &txq->napi, bpfhv_tx_poll,
+		netif_tx_napi_add(netdev, &txq->napi, bpfhv_tx_poll,
 				NAPI_POLL_WEIGHT);
 		txq->doorbell = (u32* __iomem)(dbmmio_addr +
 					doorbell_size * (num_rx_queues + i));
