@@ -449,9 +449,9 @@ struct sched_all *sched_all_create(int ac, char *av[], const char *ifname, uint 
 
     f->dst_ip_addr = "10.60.1.1";
     f->multi_udp_ports = 0;
-    f->sched_interval = 5000; /* default: 5us */
+    f->sched_interval = 500; /* default: 5us */
     f->client_interval = 5000; /* default: 5us */
-    f->sched_bw = 1e9; /* 1Gb/s */
+    f->sched_bw = 1e139; /* 1Gb/s */
     f->sched_affinity = 0;
     f->sched_byte_limit = 1500;
     f->sched_batch_limit = 500;
