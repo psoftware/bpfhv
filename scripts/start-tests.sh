@@ -1,9 +1,18 @@
 #!/bin/bash
+TESTFOLDER="02-nmreplay"
+TESTPREFIX="pktgen"
 
-STATUSFILE=/tmp/bpfhvstatus
-SCHEDAFFINITY=0
-SHOWSTATS="-S"
+IFTYPE="netmap"
+NETMAPIF="-i netmap:nmsink0"
+#IFTYPE="sink"
+#NETMAPIF=""
+NFLOWS=4
+SCHEDALG="rr"
+
 VERBOSE="-v"
+SHOWSTATS="-S"
+SCHEDAFFINITY=0
+STATUSFILE=/tmp/bpfhvstatus
 
 wait_for_status() {
 	while true; do
@@ -14,13 +23,16 @@ wait_for_status() {
 	done
 }
 
-for NCL in $(seq 1 18); do
-	IFTYPE="sink"
-	MARKSIDE="none"
-	NFLOWS=4
-	SCHEDALG="rr"
+TESTPATH=/home/antonio/bpfhv/scripts/results/$TESTFOLDER
+if [ -d "$TESTPATH" ]; then
+	echo "result folder exists! Not overriding."
+	#exit;
+fi
+mkdir $TESTPATH
 
-	TESTNAME=$MARKSIDE-$IFTYPE-$SCHEDALG-$NFLOWS-$(printf '%02x\n' $NCL)
+for MARKSIDE in hv guest none; do
+    for NCL in $(seq 1 19); do
+	TESTNAME=$TESTPREFIX-$MARKSIDE-$IFTYPE-$SCHEDALG-$NFLOWS-$(printf '%02u\n' $NCL)
 	echo "-> Starting test $TESTNAME"
 
 	# Delete stats and barrier file
@@ -30,7 +42,7 @@ for NCL in $(seq 1 18); do
 	# Start backend
 	echo "Starting backend"
 	rm -f /tmp/server
-	/home/antonio/bpfhv/proxy/backend -w $NCL -m $IFTYPE -f $MARKSIDE -a $SCHEDAFFINITY -s $STATUSFILE $SHOWSTATS $VERBOSE -- \
+	/home/antonio/bpfhv/proxy/backend -w $NCL -m $IFTYPE $NETMAPIF -f $MARKSIDE -a $SCHEDAFFINITY -s $STATUSFILE $SHOWSTATS $VERBOSE -- \
 		-flowsets 1:1500:$NFLOWS -alg $SCHEDALG >/dev/null 2>/dev/null &
 	#/home/antonio/bpfhv/proxy/backend -w $NCL -m $IFTYPE -f $MARKSIDE  -a 0 -S -v -- -flowsets 1:1500:$NFLOWS -alg $SCHEDALG  &
 	BACKENDPID=$!
@@ -55,7 +67,7 @@ for NCL in $(seq 1 18); do
 	wait_for_status "Active clients:0"
 
 	# Get stats
-	/home/antonio/bpfhv/scripts/stats.sh > /home/antonio/bpfhv/scripts/results/$TESTNAME
+	/home/antonio/bpfhv/scripts/stats.sh > /home/antonio/bpfhv/scripts/results/$TESTFOLDER/$TESTNAME
 
 	# Delete stats and barrier file
 	rm /home/antonio/sharedvm/release_barrier
@@ -65,4 +77,5 @@ for NCL in $(seq 1 18); do
 	echo "Stopping backend"
 	kill -SIGINT $BACKENDPID
 	sleep 2
+    done
 done

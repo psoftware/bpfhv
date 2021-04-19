@@ -6,6 +6,7 @@ COREMAP=(0 2 4 6 8 10 12 14 16 18 1 3 5 7 9 11 13 15 17 19)
 SOCK=/tmp/server
 IMG="/home/antonio/images/debian.qcow2"
 SHARED_DIR="/home/antonio/sharedvm"
+MEM=1536M
 
 for I in $(seq 1 $NUMGUESTS); do
 	NUMAID=$((I / 10))
@@ -13,8 +14,7 @@ for I in $(seq 1 $NUMGUESTS); do
 	VMID="vm$I"
 	MACID=$(printf '%02x\n' $I)
 	VNC="-vnc :$I"
-	MEM=1G
-	CORES=2
+	CORES="2,sockets=1,cores=1,threads=2"
 	NOGRAPHIC=""
 	TMPPID=/tmp/$VMID.pid
 
@@ -29,7 +29,7 @@ for I in $(seq 1 $NUMGUESTS); do
 		-fsdev local,id=test_dev,path=${SHARED_DIR},security_model=none -device virtio-9p-pci,fsdev=test_dev,mount_tag=hv_mount \
 	        -numa node,memdev=mem0 \
 	        -object memory-backend-file,id=mem0,size=${MEM},mem-path=/dev/hugepages/${VMID},share=on \
-        	-device bpfhv-pci,netdev=data20,mac=00:AA:BB:CC:0a:${MACID},num_tx_bufs=512 \
+        	-device bpfhv-pci,netdev=data20,mac=00:AA:BB:CC:0a:${MACID},num_tx_bufs=256 \
         	-netdev type=bpfhv-proxy,id=data20,chardev=char20 \
 	        -chardev socket,id=char20,path=${SOCK} \
 		-daemonize
