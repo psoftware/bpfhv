@@ -1,31 +1,53 @@
 #ifndef MARK_FUN_H_
 #define MARK_FUN_H_
 
+// static inline int
+// find_substr(const uint8_t *buf, uint16_t buf_len, const char *pattern) {
+//     int plen = 0;
+//     while(pattern[plen] == '\0')
+//         plen++;
+
+//     if(plen == 0 || buf_len < plen)
+//         return -1;
+
+//     int i,j;
+//     for(i = 0; i <= buf_len - plen; i++) {
+//         for(j = 0; j < plen; j++)
+//             if(buf[i+j] != pattern[j])
+//                 break;
+//         if(j == plen) // found full match
+//             return 1;
+//     }
+
+//     return -1;
+// }
+
+static inline uint32_t
+bpf_strlen(const char *str) {
+	const char *s;
+	for (s = str; *s; ++s);
+	return (s - str);
+}
+
 static inline int
-find_substr(const uint8_t *buf, uint16_t buf_len, const char *pattern) {
-    int plen = 0;
-    while(pattern[plen] == '\0')
-        plen++;
+find_prefix(const uint8_t *buf, uint16_t buf_len, const char *prefix) {
+    uint32_t prefix_len = bpf_strlen(prefix);
+    if(prefix_len == 0 || prefix_len > buf_len)
+        return 0;
 
-    if(plen == 0 || buf_len < plen)
-        return -1;
+    for(uint32_t i=0; i<prefix_len; i++)
+        if(buf[i] != prefix[i])
+            return 0;
 
-    int i,j;
-    for(i = 0; i <= buf_len - plen; i++) {
-        for(j = 0; j < plen; j++)
-            if(buf[i+j] != pattern[j])
-                break;
-        if(j == plen) // found full match
-            return 1;
-    }
-
-    return -1;
+    return 1;
 }
 
 #define DEFAULT_CLASS	0;
 #define STREAM_1		1;
 #define STREAM_2		2;
-#define STREAM_ERR		3;
+#define STREAM_3		3;
+#define STREAM_4		4;
+#define STREAM_ERR		5;
 
 #define SAFE_PKTDATA_OFFSET_ADV(data, data_offset, x, pkt_sz) ({\
 	if((data_offset) + (x) > (pkt_sz)) \
@@ -110,17 +132,37 @@ mark_packet_fun(uint8_t *data, uint32_t pkt_sz) {
 
     /* L7/Payload rules */
     __attribute__((unused)) uint8_t *l7_payload = (uint8_t*)data;
+    __attribute__((unused)) uint32_t payload_size = pkt_sz-data_offset;
 
-    /* rule list */
+    /* ICMP */
     if(iph->protocol == IPPROTO_ICMP)
         return STREAM_1;
 
-    if(iph->protocol == IPPROTO_UDP && dest_port == 53 &&
-                find_substr(l7_payload, pkt_sz-data_offset, "cloudflare"))
+    /* DNS */
+    if(iph->protocol == IPPROTO_UDP && dest_port == 53)
         return STREAM_1;
-    if(iph->protocol == IPPROTO_TCP && dest_port == 80 &&
-                find_substr(l7_payload, pkt_sz-data_offset, "GET / HTTP/1.1"))
+
+    /* real time VOIP/AUDIO traffic */
+    if(iph->protocol == IPPROTO_UDP && dest_port == 1853)
+        return STREAM_1;
+
+    /* small TCP SYN and ACK packets */
+    if(iph->protocol == IPPROTO_TCP && (tcp_header->syn || tcp_header->ack) && payload_size < 666)
         return STREAM_2;
+
+    /* SSH sessions */
+    if(iph->protocol == IPPROTO_TCP && dest_port == 22)
+        return STREAM_2;
+
+    /* HTTP/HTTPS init + payload */
+    if(iph->protocol == IPPROTO_TCP && (dest_port == 80 || dest_port == 443))
+        return STREAM_3;
+
+    /* HTTP init on other ports (we cannot track connections yet for payload marking) */
+    char http_prefix[] = "GET / HTTP/1.1";
+    if(iph->protocol == IPPROTO_TCP &&
+                find_prefix(l7_payload, payload_size, http_prefix))
+        return STREAM_4;
 
 
     return DEFAULT_CLASS;
