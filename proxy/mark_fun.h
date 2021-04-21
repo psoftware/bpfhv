@@ -42,12 +42,17 @@ find_prefix(const uint8_t *buf, uint16_t buf_len, const char *prefix) {
     return 1;
 }
 
-#define DEFAULT_CLASS	0;
-#define STREAM_1		1;
-#define STREAM_2		2;
-#define STREAM_3		3;
-#define STREAM_4		4;
-#define STREAM_ERR		5;
+#define STREAM_A1        0;
+#define STREAM_A2        1;
+#define STREAM_A3        2;
+#define STREAM_A4        3;
+#define STREAM_B1        4;
+#define STREAM_B2        5;
+#define STREAM_B3        6;
+#define STREAM_B4        7;
+#define STREAM_ERR       8;
+#define DEFAULT_CLASS    9;
+#define STREAM_BY_CLASS(cl,strm) (cl*4+strm)
 
 #define SAFE_PKTDATA_OFFSET_ADV(data, data_offset, x, pkt_sz) ({\
 	if((data_offset) + (x) > (pkt_sz)) \
@@ -60,6 +65,8 @@ find_prefix(const uint8_t *buf, uint16_t buf_len, const char *prefix) {
 	if(!(cond))                        \
 		return STREAM_ERR;             \
 })
+
+#define IPADDR(a1,a2,a3,a4) (a1 << 24 | a2 << 16 | a3 << 8 | a4)
 
 static inline uint32_t
 mark_packet_fun(uint8_t *data, uint32_t pkt_sz) {
@@ -74,7 +81,7 @@ mark_packet_fun(uint8_t *data, uint32_t pkt_sz) {
 
     switch(ethertype) {
         case ETH_P_ARP:
-            return STREAM_1;
+            return STREAM_A1;
         case ETH_P_IP:
             break;
         default:
@@ -134,37 +141,63 @@ mark_packet_fun(uint8_t *data, uint32_t pkt_sz) {
     __attribute__((unused)) uint8_t *l7_payload = (uint8_t*)data;
     __attribute__((unused)) uint32_t payload_size = pkt_sz-data_offset;
 
+    /* Section 0: high priority */
     /* ICMP */
     if(iph->protocol == IPPROTO_ICMP)
-        return STREAM_1;
+        return STREAM_A1;
 
-    /* DNS */
+    /* Google DNS */
+    if(iph->protocol == IPPROTO_UDP && dest_port == 53 &&
+        (dest_ip == cpu_to_be32(IPADDR(8,8,8,8)) || dest_ip == IPADDR(8,8,4,4)))
+        return STREAM_A1;
+
+    /* Other DNS */
     if(iph->protocol == IPPROTO_UDP && dest_port == 53)
-        return STREAM_1;
+        return STREAM_A2;
 
-    /* real time VOIP/AUDIO traffic */
-    if(iph->protocol == IPPROTO_UDP && dest_port == 1853)
-        return STREAM_1;
+    /* Split into class A and B based on ip address and tos */
+    uint8_t ipclass = 2;
+    if(iph->tos == 0x0c || iph->tos == 0xb8 ||
+            (be32_to_cpu(dest_ip) & IPADDR(255,255,255,0)) == IPADDR(172,16,139,0))
+        ipclass = 0;
+    else if((be32_to_cpu(dest_ip) & IPADDR(255,255,255,0)) == IPADDR(172,16,128,0))
+        ipclass = 1;
 
-    /* small TCP SYN and ACK packets */
-    if(iph->protocol == IPPROTO_TCP && (tcp_header->syn || tcp_header->ack) && payload_size < 666)
-        return STREAM_2;
+    if(ipclass != 2) {
+        /* real time VOIP/AUDIO traffic */
+        if(iph->protocol == IPPROTO_UDP && dest_port == 1853)
+            return STREAM_BY_CLASS(ipclass, 0);
 
-    /* SSH sessions */
-    if(iph->protocol == IPPROTO_TCP && dest_port == 22)
-        return STREAM_2;
+        /* SSH/Telnet/RDP sessions */
+        if(iph->protocol == IPPROTO_TCP && (dest_port == 22 || dest_port == 23 || dest_port == 3389))
+            return STREAM_BY_CLASS(ipclass, 1);
 
-    /* HTTP/HTTPS init + payload */
-    if(iph->protocol == IPPROTO_TCP && (dest_port == 80 || dest_port == 443))
-        return STREAM_3;
+        /* small TCP SYN and ACK packets */
+        if(iph->protocol == IPPROTO_TCP && (tcp_header->syn || tcp_header->ack) && payload_size < 200)
+            return STREAM_BY_CLASS(ipclass, 1);
 
+        /* NFS server */
+        if((iph->protocol == IPPROTO_TCP || iph->protocol == IPPROTO_UDP) &&
+            (dest_port == 111 || dest_port == 2049))
+            return STREAM_BY_CLASS(ipclass, 2);
+
+        /* FTP/SFTP sessions */
+        if(iph->protocol == IPPROTO_TCP && (dest_port == 20 || dest_port == 21 || dest_port == 69))
+            return STREAM_BY_CLASS(ipclass, 2);
+
+        /* HTTP/HTTPS init + payload */
+        if(iph->protocol == IPPROTO_TCP && (dest_port == 80 || dest_port == 443))
+            return STREAM_BY_CLASS(ipclass, 3);
+    }
+
+    /* Low priority targets */
     /* HTTP init on other ports (we cannot track connections yet for payload marking) */
     char http_prefix[] = "GET / HTTP/1.1";
     if(iph->protocol == IPPROTO_TCP &&
                 find_prefix(l7_payload, payload_size, http_prefix))
-        return STREAM_4;
+        return STREAM_B1;
 
-
+    /* junk */
     return DEFAULT_CLASS;
 }
 

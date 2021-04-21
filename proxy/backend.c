@@ -34,6 +34,8 @@
 #include <linux/tcp.h>
 #include <arpa/inet.h>
 #define be16_to_cpu(x) ntohs((x))
+#define be32_to_cpu(x) ntohl((x))
+#define cpu_to_be32(x) htonl((x))
 #include "mark_fun.h"
 
 #include "backend.h"
