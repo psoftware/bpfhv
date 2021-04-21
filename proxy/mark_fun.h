@@ -50,8 +50,12 @@ find_prefix(const uint8_t *buf, uint16_t buf_len, const char *prefix) {
 #define STREAM_B2        5;
 #define STREAM_B3        6;
 #define STREAM_B4        7;
-#define STREAM_ERR       8;
-#define DEFAULT_CLASS    9;
+#define STREAM_C1        8;
+#define STREAM_C2        9;
+#define STREAM_C3        10;
+#define STREAM_C4        11;
+#define STREAM_ERR       12;
+#define DEFAULT_CLASS    13;
 #define STREAM_BY_CLASS(cl,strm) (cl*4+strm)
 
 #define SAFE_PKTDATA_OFFSET_ADV(data, data_offset, x, pkt_sz) ({\
@@ -163,32 +167,30 @@ mark_packet_fun(uint8_t *data, uint32_t pkt_sz) {
     else if((be32_to_cpu(dest_ip) & IPADDR(255,255,255,0)) == IPADDR(172,16,128,0))
         ipclass = 1;
 
-    if(ipclass != 2) {
-        /* real time VOIP/AUDIO traffic */
-        if(iph->protocol == IPPROTO_UDP && dest_port == 1853)
-            return STREAM_BY_CLASS(ipclass, 0);
+    /* real time VOIP/AUDIO traffic */
+    if(iph->protocol == IPPROTO_UDP && dest_port == 1853)
+        return STREAM_BY_CLASS(ipclass, 0);
 
-        /* SSH/Telnet/RDP sessions */
-        if(iph->protocol == IPPROTO_TCP && (dest_port == 22 || dest_port == 23 || dest_port == 3389))
-            return STREAM_BY_CLASS(ipclass, 1);
+    /* SSH/Telnet/RDP sessions */
+    if(iph->protocol == IPPROTO_TCP && (dest_port == 22 || dest_port == 23 || dest_port == 3389))
+        return STREAM_BY_CLASS(ipclass, 1);
 
-        /* small TCP SYN and ACK packets */
-        if(iph->protocol == IPPROTO_TCP && (tcp_header->syn || tcp_header->ack) && payload_size < 200)
-            return STREAM_BY_CLASS(ipclass, 1);
+    /* small TCP SYN and ACK packets */
+    if(iph->protocol == IPPROTO_TCP && (tcp_header->syn || tcp_header->ack) && payload_size < 200)
+        return STREAM_BY_CLASS(ipclass, 1);
 
-        /* NFS server */
-        if((iph->protocol == IPPROTO_TCP || iph->protocol == IPPROTO_UDP) &&
-            (dest_port == 111 || dest_port == 2049))
-            return STREAM_BY_CLASS(ipclass, 2);
+    /* NFS server */
+    if((iph->protocol == IPPROTO_TCP || iph->protocol == IPPROTO_UDP) &&
+        (dest_port == 111 || dest_port == 2049))
+        return STREAM_BY_CLASS(ipclass, 2);
 
-        /* FTP/SFTP sessions */
-        if(iph->protocol == IPPROTO_TCP && (dest_port == 20 || dest_port == 21 || dest_port == 69))
-            return STREAM_BY_CLASS(ipclass, 2);
+    /* FTP/SFTP sessions */
+    if(iph->protocol == IPPROTO_TCP && (dest_port == 20 || dest_port == 21 || dest_port == 69))
+        return STREAM_BY_CLASS(ipclass, 2);
 
-        /* HTTP/HTTPS init + payload */
-        if(iph->protocol == IPPROTO_TCP && (dest_port == 80 || dest_port == 443))
-            return STREAM_BY_CLASS(ipclass, 3);
-    }
+    /* HTTP/HTTPS init + payload */
+    if(iph->protocol == IPPROTO_TCP && (dest_port == 80 || dest_port == 443))
+        return STREAM_BY_CLASS(ipclass, 3);
 
     /* Low priority targets */
     /* HTTP init on other ports (we cannot track connections yet for payload marking) */
