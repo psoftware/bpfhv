@@ -114,6 +114,13 @@ null_recv(BpfhvBackend *be, const struct iovec *iov, size_t iovcnt)
 }
 
 static ssize_t
+null_send(BpfhvBackend *be, const struct iovec *iov, size_t iovcnt)
+{
+    return 0;  /* Nothing to read. */
+}
+
+
+static ssize_t
 source_recv(BpfhvBackend *be, const struct iovec *iov, size_t iovcnt)
 {
     static const uint8_t udp_pkt[] = {
@@ -504,6 +511,44 @@ process_packets_spin(BpfhvBackend *be)
     }
 }
 
+/* dequeue packets until all target backend packets are dequeued */
+static int
+scheduler_backend_drain(struct sched_all *f, BpfhvBackend *be) {
+    uint64_t now;
+    size_t ndeq, totaldeq=0;
+    size_t old_pending=0, pending, i;
+
+    /* backend should not be running at this point */
+    if(be->running)
+        return -1;
+
+    /* TODO: for safety we should exit from this loop when too much time passes.
+     * we can't rely on ndeq==0 because our scheduler is not work-conserving due
+     * to the bandwidth limiter. Also, we should dequeue packets without any
+     * constraint on bandwidth or time, as sched_dequeue() could be too slow
+     * to execute */
+    do {
+        now = rdtsc();
+        ndeq = sched_dequeue(f, now);
+        totaldeq += ndeq;
+
+        /* compute unreleased packets */
+        pending = 0;
+        for (i = TXI_BEGIN(be); i < TXI_END(be); i++) {
+            BpfhvBackendQueue *txq = be->q + i;
+            pending += be->ops.txq_get_pending(be, txq);
+        }
+        if(old_pending == 0)
+            old_pending = pending;
+    } while (pending != 0);
+
+    if(unlikely(verbose && totaldeq > 0)) {
+        printf("scheduler_backend_drain: released %lu packets out of %lu for backend %d\n", old_pending, totaldeq, be->cfd);
+    }
+
+    return 0;
+}
+
 static void
 process_packets_spin_many(BpfhvBackendBatch *bc)
 {
@@ -512,10 +557,12 @@ process_packets_spin_many(BpfhvBackendBatch *bc)
     int sleep_usecs = bp->sleep_usecs;
     struct sched_all *f = bp->sched_f;
     unsigned int i;
+    int stopflag;
+    int stopcompleted_fd = bc->stopcompleted_fd;
+    BpfhvBackend *stopfd_backend;
 
     /* Disable all guest-->host notifications. */
-    for(size_t j = 0; j < bc->used_instances; ++j) {
-        BpfhvBackend *be = &(bc->instance[j]);
+    for(BpfhvBackend *be = bc->list_head; be != NULL; be = be->next) {
         BeOps ops = be->ops;
         for (i = RXI_BEGIN(be); i < RXI_END(be); i++) {
             ops.rxq_kicks(be->q[i].ctx.rx, /*enable=*/0);
@@ -529,7 +576,69 @@ process_packets_spin_many(BpfhvBackendBatch *bc)
     }
 
 
-    while (ACCESS_ONCE(bc->stopflag) == BPFHV_STOPFD_NOEVENT) {
+    while (1) {
+        /* scheduler requires to know when routine starts */
+        uint64_t now = rdtsc();
+        size_t dropped = 0;
+
+        stopflag = ACCESS_ONCE(bc->stopflag);
+
+        switch (stopflag) {
+            case likely(BPFHV_STOPFD_NOEVENT): break;
+            case BPFHV_STOPFD_HALT:    return;
+            case BPFHV_STOPFD_ADD_ONE:
+                /* memory barrier betwen bc->stopflag and stop parameters */
+                __atomic_thread_fence(__ATOMIC_ACQUIRE);
+                stopfd_backend = ACCESS_ONCE(bc->stopfd_backend);
+
+                /* append new backend to list head */
+                stopfd_backend->prev = NULL;
+                stopfd_backend->next = bc->list_head;
+                if(bc->list_head)
+                    bc->list_head->prev = stopfd_backend;
+                bc->list_head = stopfd_backend;
+
+                /* reset event state.
+                 * ensure that signal BPFHV_STOPFD_NOEVENT ---hb--> stopcompleted_fd
+                 * not needed but does not hurt */
+                ACCESS_ONCE(bc->stopflag) = BPFHV_STOPFD_NOEVENT;
+                __atomic_thread_fence(__ATOMIC_RELEASE);
+
+                /* main thread is waiting for us to finish, signal it */
+                eventfd_signal(stopcompleted_fd);
+                break;
+            case BPFHV_STOPFD_DELETE_ONE:
+                /* memory barrier betwen bc->stopflag and stop parameters */
+                __atomic_thread_fence(__ATOMIC_ACQUIRE);
+                stopfd_backend = ACCESS_ONCE(bc->stopfd_backend);
+
+                /* remove selected backend from list */
+                if(stopfd_backend->next)
+                        stopfd_backend->next->prev = stopfd_backend->prev;
+
+                if(stopfd_backend == bc->list_head)
+                    bc->list_head = stopfd_backend->next;
+                else
+                    stopfd_backend->prev->next = stopfd_backend->next;
+
+                /* drain all packets for removed backend */
+                int ret = scheduler_backend_drain(f, stopfd_backend);
+                if(ret < 0) { /* TODO: tell control thread that we had an error */
+                    fprintf(stderr, "scheduler_thread: cannot drain backend. exiting\n");
+                    return;
+                }
+
+                /* reset event state.
+                 * ensure that signal BPFHV_STOPFD_NOEVENT ---hb--> stopcompleted_fd
+                 * not needed but does not hurt */
+                ACCESS_ONCE(bc->stopflag) = BPFHV_STOPFD_NOEVENT;
+                __atomic_thread_fence(__ATOMIC_RELEASE);
+
+                /* main thread is waiting for us to finish, signal it */
+                eventfd_signal(stopcompleted_fd);
+                break;
+        }
+
         /* TODO: TX sync is made by scheduler functions, but not for RX */
         // if (bp->sync) {
         //     bp->sync(bp);
@@ -561,13 +670,8 @@ process_packets_spin_many(BpfhvBackendBatch *bc)
         //     }
         // }
 
-        /* scheduler requires to know when routine starts */
-        uint64_t now = rdtsc();
-        size_t dropped = 0;
-
         /* do TX after, using scheduling */
-        for(size_t j = 0; j < bc->used_instances; ++j) {
-            BpfhvBackend *be = &(bc->instance[j]);
+        for(BpfhvBackend *be = bc->list_head; be != NULL; be = be->next) {
             BeOps ops = be->ops;
 
             /* Drain the packets from the transmit queues, sending them
@@ -598,8 +702,7 @@ process_packets_spin_many(BpfhvBackendBatch *bc)
          * check for notifications after dequeue.
          * also, notify if some packets have been dropped */
         if(ndeq > 0 || unlikely(dropped)) {
-            for(size_t j = 0; j < bc->used_instances; ++j) {
-                BpfhvBackend *be = &(bc->instance[j]);
+            for(BpfhvBackend *be = bc->list_head; be != NULL; be = be->next) {
                 BeOps ops = be->ops;
 
                 /* Drain the packets from the transmit queues, sending them
@@ -650,7 +753,6 @@ process_packets(void *opaque)
     if (bp.scheduler_mode) {
         BpfhvBackendProcess *bp = bc->parent_bp;
         int sched_cpu = bp->sched_cpu;
-        struct sched_all *f = bp->sched_f;
 
         /* Set thread affinity */
         if(sched_cpu >= 0)
@@ -659,22 +761,33 @@ process_packets(void *opaque)
         /* for now we have only one thread (batch) to fetch all the data */
         assert(BPFHV_K_THREADS == 1);
 
-        /* compute total mbufs as sum of client queues */
-        uint32_t num_mbufs = 0;
-        for(size_t j = 0; j < bc->used_instances; ++j) {
-            BpfhvBackend *be = &(bc->instance[j]);
-            for (size_t i = TXI_BEGIN(be); i < TXI_END(be); i++) {
-                num_mbufs += be->num_tx_bufs;
-            }
+        /* (re)init scheduler */
+        bp->sched_f = sched_all_create(bp->sch_argc, bp->sch_argv, bp->sch_ifname, bp->sch_iftype);
+        if(!bp->sched_f) {
+            fprintf(stderr, "Cannot initialize scheduler, exiting.\n");
+            return NULL;
         }
+
+        /* compute total mbufs as sum of client queues */
+        // uint32_t num_mbufs = 0;
+        // for(BpfhvBackend *be = bc->list_head; be != NULL; be = be->next) {
+        //     for (size_t i = TXI_BEGIN(be); i < TXI_END(be); i++) {
+        //         num_mbufs += be->num_tx_bufs;
+        //     }
+        // }
+
+        /* TODO: 1024 should not be hardcoded and no checks are done
+         *  in order to ensure that ring size does not exceed cap */
+        /* num_mbufs = clientcap*ringsizecap */
+        uint32_t num_mbufs = bp->client_cap*1024;
         if(unlikely(verbose))
             printf("num_bufs = %u\n", num_mbufs);
 
-        sched_all_start(f, num_mbufs);
+        sched_all_start(bp->sched_f, num_mbufs);
         /* start packet processing */
         process_packets_spin_many(bc);
         /* finalize scheduler after finishing */
-        sched_all_finish(f);
+        sched_all_finish(bp->sched_f);
     } else if (bp.busy_wait) {
         process_packets_spin(be);
     } else {
@@ -724,10 +837,17 @@ backend_drain(BpfhvBackend *be)
 {
     unsigned int i;
 
+    /* next txq_drain must drop all packets */
+    void *old_send = be->send;
+    be->send = null_send;
+
     /* Drain any pending transmit buffers. */
     for (i = TXI_BEGIN(be); i < TXI_END(be); i++) {
         BpfhvBackendQueue *txq = be->q + i;
         size_t drained = 0;
+
+        /* txq_drain works only if there are no non-consumed acquired packets */
+        assert(be->ops.txq_get_pending(be, txq) == 0);
 
         for (;;) {
             size_t count;
@@ -742,54 +862,12 @@ backend_drain(BpfhvBackend *be)
             printf("Drained %zu packets from %s\n", drained, txq->name);
         }
     }
+
+    be->send = old_send;
 }
 
 
 int update_status_file(BpfhvBackendProcess *bp);
-
-/* Helper function to stop the packet processing thread and join it. */
-static int
-backend_stop(BpfhvBackend *be)
-{
-    /*int ret;
-
-    eventfd_signal(be->stopfd);
-    ACCESS_ONCE(be->stopflag) = BPFHV_STOPFD_HALT;
-    __atomic_thread_fence(__ATOMIC_RELEASE);
-    ret = pthread_join(be->th, NULL);
-    if (ret) {
-        fprintf(stderr, "pthread_join() failed: %s\n",
-                strerror(ret));
-        return ret;
-    }
-    be->running = 0;*/
-
-    int ret;
-
-    BpfhvBackendBatch *bc = be->parent_bc;
-    if(bc->th_running) {
-        //eventfd_signal(bc->stopfd);
-        ACCESS_ONCE(bc->stopflag) = BPFHV_STOPFD_HALT;
-        __atomic_thread_fence(__ATOMIC_RELEASE);
-        ret = pthread_join(bc->th, NULL);
-        if (ret) {
-            fprintf(stderr, "pthread_join() failed: %s\n",
-                    strerror(ret));
-            return ret;
-        }
-        bc->th_running = 0;
-    }
-
-    if(!be->running)
-        return -1;
-
-    be->running = 0;
-    bc->used_instances--;
-    update_status_file(&bp);
-
-    /* TODO: 0 is causing segfaults... don't drain for now */
-    return -1;
-}
 
 static void
 stats_show(BpfhvBackendProcess *bp)
@@ -807,8 +885,7 @@ stats_show(BpfhvBackendProcess *bp)
 
     for(size_t i = 0; i < BPFHV_K_THREADS; ++i) {
         BpfhvBackendBatch *bc = &(bp->thread_batch[i]);
-        for(size_t j = 0; j < bc->used_instances; ++j) {
-            BpfhvBackend *be =  &(bc->instance[j]);
+        for(BpfhvBackend *be = bc->list_head; be != NULL; be = be->next) {
             if (be->running) {
                 if(!printed_header) {
                     printf("Statistics:\n");
@@ -849,18 +926,20 @@ stats_show(BpfhvBackendProcess *bp)
         sched_dump(bp->sched_f);
 }
 
+int activate_backend(BpfhvBackend *be);
+int deactivate_backend(BpfhvBackend *be);
+
 static void
 sigint_handler(int signum)
 {
     for(size_t i = 0; i < BPFHV_K_THREADS; ++i) {
         BpfhvBackendBatch *bc = &(bp.thread_batch[i]);
-        for(size_t j = 0; j < bc->used_instances; ++j) {
-            BpfhvBackend *be =  &(bc->instance[j]);
+        for(BpfhvBackend *be = bc->list_head; be != NULL; be = be->next) {
             if (be->running) {
                 if (verbose) {
                     printf("Running backend %d interrupted\n", be->cfd);
                 }
-                backend_stop(be);
+                deactivate_backend(be);
                 backend_drain(be);
             }
         }
@@ -874,9 +953,6 @@ sigint_handler(int signum)
     unlink(BPFHV_SERVER_PATH);
     exit(EXIT_SUCCESS);
 }
-
-int activate_backend(BpfhvBackend *be);
-int deactivate_backend(BpfhvBackend *be);
 
 /* process requests coming from one hypervisor */
 static int
@@ -1387,7 +1463,7 @@ process_guest_message(BpfhvBackend *be)
         }
 
         /* Notify the worker thread and join it. */
-        ret = backend_stop(be);
+        ret = deactivate_backend(be);
         if (ret) {
             break;
         }
@@ -1560,47 +1636,72 @@ usage(const char *progname)
             progname);
 }
 
-BpfhvBackend* assign_backend() {
+BpfhvBackend* allocate_backend() {
     BpfhvBackend *be = NULL;
+
     /* TODO: we are considering only scheduler case here,
      * so only a single batch */
     //for(size_t i = 0; i < BPFHV_K_THREADS; ++i) {
         BpfhvBackendBatch *bc = &(bp.thread_batch[0 /*i*/]);
-        if(bc->allocated_instances < bp.client_threshold_activation/*BPFHV_MAX_THREAD_INSTANCES*/) {
-            be = &(bc->instance[bc->allocated_instances]);
+        if(bc->allocated_instances < bp.client_cap/*BPFHV_MAX_THREAD_INSTANCES*/) {
+            be = calloc(1, sizeof(BpfhvBackend));
+            if(be == NULL)
+                return NULL;
             be->parent_bp = &bp;
             be->parent_bc = bc;
             bc->allocated_instances++;
-        }
+        } else
+            return NULL;
+
     //}
 
     return be;
 }
 
-/* TODO: for now we activate the scheduler thread only when we have 
- * at least a number of clients. This should be dynamic */
+int schthread_signal_backend(struct BpfhvBackendBatch *bc, struct BpfhvBackend *be, int flag) {
+    bc->stopfd_backend = be;
+    /* stopfd_backend=be ---hb--> stopfd signal */
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    bc->stopflag = flag;
+    /*TODO: evaluate HB if using signal. not doing it because only spin is implemented */
+    //eventfd_signal(bc->stopfd);
+
+    /* wait for scheduler thread response */
+    eventfd_drain(bc->stopcompleted_fd);
+    /* ensure that signal BPFHV_STOPFD_NOEVENT ---hb--> stopcompleted_fd
+     * not needed but useful if we want to add error response */
+    __atomic_thread_fence(__ATOMIC_RELEASE);
+    return 0;
+}
+
 int activate_backend(BpfhvBackend *be) {
     BpfhvBackendBatch *parent_bc = be->parent_bc;
-    if(parent_bc == NULL || be->running == 1)
+    int ret;
+
+    if(be->running || !parent_bc)
         return -1;
 
-    if(parent_bc->used_instances >= bp.client_threshold_activation)
-        return -1;
-
-    parent_bc->used_instances++;
-    if(parent_bc->used_instances == bp.client_threshold_activation) {
-        int ret = pthread_create(&parent_bc->th, NULL, process_packets, parent_bc);
+    /* start scheduler thread if it is not running */
+    if(!parent_bc->th_running) {
+        ret = pthread_create(&parent_bc->th, NULL, process_packets, parent_bc);
         if (ret) {
             fprintf(stderr, "pthread_join() failed: %s\n",
                     strerror(ret));
             return ret;
         }
         parent_bc->th_running = 1;
-
         if(verbose) {
             fprintf(stdout, "Scheduler thread started\n");
         }
     }
+
+    /* ask scheduler thread to add guest to spin list */
+    ret = schthread_signal_backend(parent_bc, be, BPFHV_STOPFD_ADD_ONE);
+    if (ret < 0) {
+        fprintf(stderr, "error when attaching backend to scheduler thread!\n");
+        return ret;
+    }
+    parent_bc->active_instances++;
 
     update_status_file(&bp);
 
@@ -1608,18 +1709,38 @@ int activate_backend(BpfhvBackend *be) {
 }
 
 int deactivate_backend(BpfhvBackend *be) {
+    BpfhvBackendBatch *parent_bc = be->parent_bc;
     int ret;
 
-    eventfd_signal(be->stopfd);
-    ACCESS_ONCE(be->stopflag) = BPFHV_STOPFD_HALT;
-    __atomic_thread_fence(__ATOMIC_RELEASE);
-    ret = pthread_join(be->th, NULL);
-    if (ret) {
-        fprintf(stderr, "pthread_join() failed: %s\n",
-                strerror(ret));
+    if(!be->running)
+        return -1;
+
+    be->running = 0;
+
+    /* ask scheduler thread to remove guest from spin list */
+    ret = schthread_signal_backend(be->parent_bc, be, BPFHV_STOPFD_DELETE_ONE);
+    if (ret < 0) {
+        fprintf(stderr, "error when detaching backend from scheduler thread!\n");
         return ret;
     }
-    be->running = 0;
+    parent_bc->active_instances--;
+
+    /* if there are no more used instances, then stop scheduler thread */
+    /* TODO: this is only useful in spinning mode, generalize */
+    if(parent_bc->active_instances == 0) {
+        parent_bc->stopflag = BPFHV_STOPFD_HALT;
+        __atomic_thread_fence(__ATOMIC_RELEASE);
+        /* wait for thread stop */
+        ret = pthread_join(parent_bc->th, NULL);
+        if (ret) {
+            fprintf(stderr, "pthread_join() failed: %s\n",
+                    strerror(ret));
+            return ret;
+        }
+        parent_bc->th_running = 0;
+    }
+
+    update_status_file(&bp);
 
     return 0;
 }
@@ -1796,7 +1917,7 @@ setup_backend(BpfhvBackend *be, const char *ifimpl,
         fprintf(stderr, "eventfd() failed: %s\n", strerror(errno));
         return -1;
     }
-    be->stopflag = 0;
+    be->stopflag = BPFHV_STOPFD_NOEVENT;
 
     ret = fcntl(be->stopfd, F_SETFL, O_NONBLOCK);
     if (ret) {
@@ -1907,7 +2028,7 @@ int main_server_select() {
                     new_sd = accept(sock_serv, NULL, NULL);
 
                     /* alloc new backend */
-                    BpfhvBackend *be = assign_backend();
+                    BpfhvBackend *be = allocate_backend();
                     if (be == NULL) {
                         fprintf(stderr, "max backend number reached!\n");
                         close(new_sd);
@@ -1925,6 +2046,9 @@ int main_server_select() {
                         /*TODO: bug on be->fd! and not exiting here.*/
                         fprintf(stderr, "error when setting up backend!\n");
                         // dealloc_backend(be); /*TODO*/
+                        free(be);
+                        close(new_sd);
+                        continue;
                     }
 
                     /* if init is ok, add client sd to select list */
@@ -1976,7 +2100,7 @@ int update_status_file(BpfhvBackendProcess *bp) {
         }
 
         fprintf(f, "Scheduler thread active:%u\n", bc->th_running);
-        fprintf(f, "Active clients:%u\n", bc->used_instances);
+        fprintf(f, "Active clients:%u\n", bc->active_instances);
         fclose(f);
     }
 
@@ -2023,9 +2147,9 @@ main(int argc, char **argv)
 
         case 'w':
             bp.scheduler_mode = 1;
-            bp.client_threshold_activation = atoi(optarg);
-            if(bp.client_threshold_activation <= 0) {
-                fprintf(stderr, "scheduler activation threshold must be > 0. %s\n",optarg);
+            bp.client_cap = atoi(optarg);
+            if(bp.client_cap <= 0) {
+                fprintf(stderr, "scheduler client cap must be > 0. %s\n",optarg);
                 return -1;
             }
             break;
@@ -2098,11 +2222,24 @@ main(int argc, char **argv)
 
     for(size_t i = 0; i < BPFHV_K_THREADS; ++i) {
         BpfhvBackendBatch *bc = &(bp.thread_batch[i]);
-        bc->used_instances = 0;
+        bc->list_head = NULL;
+        bc->active_instances = 0;
         bc->allocated_instances = 0;
         bc->th_running = 0;
         bc->parent_bp = &bp;
         bc->stopflag = BPFHV_STOPFD_NOEVENT;
+
+        bc->stopfd = eventfd(0, 0);
+        if (bc->stopfd < 0) {
+            fprintf(stderr, "eventfd() failed: %s\n", strerror(errno));
+            return -1;
+        }
+
+        bc->stopcompleted_fd = eventfd(0, 0);
+        if (bc->stopcompleted_fd < 0) {
+            fprintf(stderr, "eventfd() failed: %s\n", strerror(errno));
+            return -1;
+        }
     }
 
 
@@ -2112,11 +2249,11 @@ main(int argc, char **argv)
     }
 
     if(bp.scheduler_mode == 1) {
-        bp.sched_f = sched_all_create(argc, argv, sch_ifname, sch_iftype);
-        if(!bp.sched_f) {
-            fprintf(stderr, "Cannot initialize scheduler, exiting.\n");
-            return -1;
-        }
+        bp.sch_argc = argc;
+        bp.sch_argv = argv;
+        bp.sch_ifname = sch_ifname;
+        bp.sch_iftype = sch_iftype;
+
         bp.sched_enqueue = fun_sched_enqueue;
 
         bp.mark_mode = sch_mark_mode;
@@ -2137,7 +2274,7 @@ main(int argc, char **argv)
         printf("\tmark on:\t%s\n", (bp.mark_mode == MARK_MODE_NO_MARK) ? "no mark" :
                                     (bp.mark_mode == MARK_MODE_HV) ? "hypervisor" :
                                     (bp.mark_mode == MARK_MODE_GUEST) ? "guest" : "??");
-        printf("\t#clients:\t%u\n", bp.client_threshold_activation);
+        printf("\t#clients:\t%u\n", bp.client_cap);
 
         update_status_file(&bp);
     }

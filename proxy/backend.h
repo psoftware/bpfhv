@@ -104,6 +104,7 @@ typedef struct BeOps {
     void (*txq_release)(struct BpfhvBackend *be,
                        BpfhvBackendQueue *txq, uint64_t opaque_idx);
     size_t (*txq_notify)(struct BpfhvBackend *be, BpfhvBackendQueue *txq);
+    size_t (*txq_get_pending)(struct BpfhvBackend *be, BpfhvBackendQueue *txq);
 
     void (*rxq_kicks)(struct bpfhv_rx_context *ctx, int enable);
     void (*txq_kicks)(struct bpfhv_tx_context *ctx, int enable);
@@ -121,6 +122,9 @@ struct BpfhvBackendBatch;
 
 /* Main data structure supporting a single bpfhv vNIC. */
 typedef struct BpfhvBackend {
+    /* batch uses lists of backends */
+    struct BpfhvBackend *next,*prev;
+
     /* Keep reference to batch parent and process */
     struct BpfhvBackendBatch *parent_bc;
     struct BpfhvBackendProcess *parent_bp;
@@ -209,6 +213,9 @@ typedef struct BpfhvBackend {
 #define BPFHV_STOPFD_DELETE_ONE     3
 
 typedef struct BpfhvBackendBatch {
+    /* Backends list head */
+    BpfhvBackend *list_head;
+
     /* Keep reference to parent process */
     struct BpfhvBackendProcess *parent_bp;
 
@@ -230,8 +237,7 @@ typedef struct BpfhvBackendBatch {
 
     /* Stored backend instances for this batch */
     uint16_t allocated_instances;
-    uint16_t used_instances;
-    BpfhvBackend instance[BPFHV_MAX_THREAD_INSTANCES];
+    uint16_t active_instances;
 } BpfhvBackendBatch;
 
 typedef struct BpfhvBackendProcess {
@@ -259,6 +265,12 @@ typedef struct BpfhvBackendProcess {
     int scheduler_mode;
     void *sched_f;
 
+    /* save sched_init parameters to later reinit scheduler if needed */
+    int sch_argc;
+    char **sch_argv;
+    const char *sch_ifname;
+    uint sch_iftype;
+
 #define MARK_MODE_NO_MARK  0
 #define MARK_MODE_HV       1
 #define MARK_MODE_GUEST    2
@@ -268,9 +280,8 @@ typedef struct BpfhvBackendProcess {
     /* Send and receive to scheduler */
     SchedEnqueueFun sched_enqueue;
 
-    /* Scheduler waits for a predefined number of clients
-     * before starting, and doesn't accept more of them */
-    int client_threshold_activation;
+    /* Scheduler can accept only a max number of clients */
+    int client_cap;
 
     /* CPU Affinity */
     int sched_cpu;

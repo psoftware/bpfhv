@@ -430,6 +430,8 @@ void sched_all_finish(struct sched_all *f) {
           8.0*bytes, 8.0*bytes/duration, (double)pkts, pkts/duration);
     }
 
+    if(f->nmd)
+        nm_close(f->nmd);
     free(f->cqs);
     f->cqs = NULL;
     free(f);

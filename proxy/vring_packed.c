@@ -674,6 +674,14 @@ vring_packed_txq_notify(BpfhvBackend *be, BpfhvBackendQueue *txq)
     return count;
 }
 
+static size_t
+vring_packed_txq_get_pending(BpfhvBackend *be, BpfhvBackendQueue *txq) {
+    struct bpfhv_tx_context *ctx = txq->ctx.tx;
+    struct vring_packed_virtq *vq = (struct vring_packed_virtq *)ctx->opaque;
+    return vq->g.pending_inuse_counter;
+}
+
+
 BeOps vring_packed_ops = {
     .rx_check_alignment = vring_packed_rx_check_alignment,
     .tx_check_alignment = vring_packed_tx_check_alignment,
@@ -689,6 +697,7 @@ BeOps vring_packed_ops = {
     .txq_acquire = vring_packed_txq_acquire,
     .txq_release = vring_packed_txq_release,
     .txq_notify = vring_packed_txq_notify,
+    .txq_get_pending = vring_packed_txq_get_pending,
     .rxq_dump = vring_packed_rxq_dump,
     .txq_dump = vring_packed_txq_dump,
     .features_avail = 0,
