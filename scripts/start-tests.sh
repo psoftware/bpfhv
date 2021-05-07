@@ -1,11 +1,9 @@
 #!/bin/bash
-TESTFOLDER="02-nmreplay"
-TESTPREFIX="pktgen"
+TESTFOLDER="09-lightmark-bpfjit"
+TESTPREFIX="nmreplay"
 
-IFTYPE="netmap"
+# if using sink, this option is not used so we can leave it also in that case
 NETMAPIF="-i netmap:nmsink0"
-#IFTYPE="sink"
-#NETMAPIF=""
 NFLOWS=4
 SCHEDALG="rr"
 
@@ -30,7 +28,8 @@ if [ -d "$TESTPATH" ]; then
 fi
 mkdir $TESTPATH
 
-for MARKSIDE in hv guest none; do
+for IFTYPE in netmap sink; do
+  for MARKSIDE in none hv guest; do
     for NCL in $(seq 1 19); do
 	TESTNAME=$TESTPREFIX-$MARKSIDE-$IFTYPE-$SCHEDALG-$NFLOWS-$(printf '%02u\n' $NCL)
 	echo "-> Starting test $TESTNAME"
@@ -78,4 +77,5 @@ for MARKSIDE in hv guest none; do
 	kill -SIGINT $BACKENDPID
 	sleep 2
     done
+  done
 done

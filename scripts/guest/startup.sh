@@ -8,6 +8,9 @@ SYNCFILE=/mnt/hv/release_barrier
 # remove this: avoid kernel addr rand for gdb debugging
 #echo 0 > /proc/sys/kernel/randomize_va_space
 
+# enable jit for best performance
+echo 1 > /proc/sys/net/core/bpf_jit_enable
+
 # Setup bpfhv module and netmap
 cd /root
 insmod $HVDIR/bin/bpfhv.ko tx_napi=1
@@ -39,11 +42,14 @@ TESTFILENAME=$HVDIR/tests/result_$(printf '%02u\n' $VMID).txt
 # Perform test
 echo "Started."
 # 1) pkt-gen
-./pkt-gen -f tx -i netmap:${IFNAME} -n 8000000 -a 0 -A > $TESTFILENAME
+#./pkt-gen -f tx -i netmap:${IFNAME} -n 8000000 -a 0 -A > $TESTFILENAME
 # 2) nmreplay
-#$HVDIR/bin/nmreplay-nort-s -f $HVDIR/traces/bigFlows.pcap -i netmap:$IFNAME -B 5G -N 8000000 -A > $TESTFILENAME
+$HVDIR/bin/nmreplay-nort-s -f $HVDIR/traces/bigFlows.pcap -i netmap:$IFNAME -B 5G -A > $TESTFILENAME &
+PGRPID=$!
+sleep 30
+kill -INT $PGRPID
 echo "Ended."
 
 # Wait for sharedfs to flush...
-sleep 12
+sleep 10
 shutdown 0
