@@ -31,8 +31,9 @@ mkdir $TESTPATH
 for IFTYPE in netmap sink; do
   for MARKSIDE in none hv guest; do
     for NCL in $(seq 1 19); do
+      for REP in $(seq 1 5); do
 	TESTNAME=$TESTPREFIX-$MARKSIDE-$IFTYPE-$SCHEDALG-$NFLOWS-$(printf '%02u\n' $NCL)
-	echo "-> Starting test $TESTNAME"
+	echo "-> Starting test $TESTNAME, Repetition $REP"
 
 	# Delete stats and barrier file
 	rm -f /home/antonio/sharedvm/release_barrier
@@ -66,7 +67,8 @@ for IFTYPE in netmap sink; do
 	wait_for_status "Active clients:0"
 
 	# Get stats
-	/home/antonio/bpfhv/scripts/stats.sh > /home/antonio/bpfhv/scripts/results/$TESTFOLDER/$TESTNAME
+	mkdir $TESTPATH/$REP
+	/home/antonio/bpfhv/scripts/stats.sh > $TESTPATH/$REP/$TESTNAME
 
 	# Delete stats and barrier file
 	rm /home/antonio/sharedvm/release_barrier
@@ -76,6 +78,7 @@ for IFTYPE in netmap sink; do
 	echo "Stopping backend"
 	kill -SIGINT $BACKENDPID
 	sleep 2
+      done
     done
   done
 done
